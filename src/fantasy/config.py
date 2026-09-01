@@ -14,11 +14,11 @@ if env_file.exists():
 else:
     load_dotenv()
 
-# Constantes de Azure AD B2C
-B2C_TENANT: str = os.getenv("B2C_TENANT", "laligadspprob2c")
+# Constantes de Azure AD B2C (Valores verificados contra tráfico real)
+B2C_TENANT: str = os.getenv("B2C_TENANT", "login.laliga.es")
 B2C_POLICY: str = os.getenv("B2C_POLICY", "B2C_1A_5ULAIP_PARAMETRIZED_SIGNIN")
 B2C_CLIENT_ID: str = os.getenv("B2C_CLIENT_ID", "6457fa17-1224-416a-b21a-ee6ce76e9bc0")
-B2C_SCOPE: str = os.getenv("B2C_SCOPE", "openid offline_access")
+B2C_SCOPE: str = os.getenv("B2C_SCOPE", "6457fa17-1224-416a-b21a-ee6ce76e9bc0 openid offline_access")
 
 # Rutas y almacén de tokens
 FANTASY_TOKEN_PATH: str = os.getenv("FANTASY_TOKEN_PATH", "secrets/token.json")
