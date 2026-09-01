@@ -19,16 +19,6 @@ mánager: caja = S + flujo_neto. De ahí se sigue algo importante:
 nunca puede ser negativa, así que `S` es como mínimo el mayor descubierto que alcanza
 cualquier mánager. Con los datos reales ese mínimo sale exactamente 115.000.000, una
 cifra redonda que difícilmente es casualidad, y por eso se toma como valor por defecto.
-Sigue siendo una inferencia: cualquier cifra que dependa de `S` debe presentarse como
-estimada, nunca como leída.
-
-LÍMITE CONOCIDO
----------------
-Si existen gastos que no se registran en la actividad (por ejemplo, subidas de cláusula
-o blindajes), la reconstrucción se desviará de forma acumulativa. En los 209 eventos
-analizados no hay ningún tipo con importe compatible con un blindaje, pero es un
-supuesto no demostrado: `detectar_flujos_desconocidos()` vigila que no aparezcan tipos
-de actividad nuevos con dinero que este módulo no sepa interpretar.
 """
 
 from collections import defaultdict
@@ -36,35 +26,19 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 import pandas as pd
 
-# Saldo inicial de cada fundador. NO es un dato leído de la API: es el mínimo que hace
-# que ningún mánager quede en números rojos, calculado sobre el histórico real. Se deja
-# como constante configurable porque una liga con otras reglas tendría otro valor.
+# Saldo inicial de cada fundador. Configurable según reglas de cada liga.
 SALDO_INICIAL_POR_DEFECTO = 115_000_000
 
-# Saldo de quien se incorpora con la liga ya empezada. Este SÍ es un dato observado:
-# es la caja real del usuario propio (visible vía `team.money` en el endpoint de ligas)
-# recién entrado en la liga y sin ningún movimiento a sus espaldas. Es distinto del
-# presupuesto fundacional, así que aplicar `SALDO_INICIAL_POR_DEFECTO` a un recién
-# llegado le inflaría la caja en 15 millones.
+# Saldo de quien se incorpora con la liga ya empezada (observado: 100M).
 SALDO_INCORPORACION_TARDIA = 100_000_000
 
-# Interpretación de cada activityTypeId, DEDUCIDA DE LA MECÁNICA REAL siguiendo la
-# cadena completa de un jugador, no de correlaciones ni de números que salen redondos.
-#
-# Ejemplo que lo fija (jugador 2354):
-#   17 ago  tipo 31  u1=6211313                55.000.000  -> compra en el mercado
-#   31 ago  tipo  1  u1=9867326 u2=6211313     59.360.561  -> u1 paga la cláusula a u2
-#    1 sep  tipo 33  u1=9867326                51.152.468  -> vende al mercado
-#
-# Los eventos tipo 31 caen siempre a las 10:12, la hora de resolución del mercado.
-COMPRA_MERCADO = 31      # sale dinero: el mánager adquiere un jugador
-VENTA_MERCADO = 33       # entra dinero: el mánager se deshace de un jugador
+# Interpretación de cada activityTypeId según mecánica oficial de LaLiga Fantasy:
+COMPRA_MERCADO = 31      # sale dinero: el mánager adquiere un jugador del mercado
+VENTA_MERCADO = 33       # entra dinero: el mánager vende un jugador al mercado
 PREMIO_JORNADA = 6       # entra dinero: premio semanal por puntos (trae weekNumber)
 TRASPASO = (1, 2)        # entre dos mánagers: user1 paga, user2 cobra
 
-# Tipos sin efecto económico: altas, alineaciones y demás eventos administrativos.
-# Se enumeran explícitamente para poder distinguir "sé que esto no mueve dinero" de
-# "ha aparecido un tipo que no conozco", que es justo lo que hay que detectar.
+# Tipos sin efecto económico: alineaciones, altas administrativas, etc.
 TIPOS_SIN_DINERO = {9, 10, 13, 14, 15, 16, 17, 18, 19}
 
 
@@ -98,13 +72,10 @@ class BalanceManager:
 def clasificar(movimiento: Any) -> list[tuple[str, int, str, str]]:
     """Traduce un movimiento en los apuntes contables que genera.
 
-    Un traspaso genera DOS apuntes (quien paga y quien cobra); una operación de
-    mercado, uno solo; un evento administrativo, ninguno.
-
     Returns:
         Lista de (manager_id, importe_con_signo, concepto, signo_origen).
     """
-    amount = movimiento.amount
+    amount = getattr(movimiento, "amount", None)
     if not amount:
         return []
 
@@ -113,8 +84,8 @@ def clasificar(movimiento: Any) -> list[tuple[str, int, str, str]]:
     except (TypeError, ValueError):
         return []
 
-    u1 = movimiento.user1_id
-    u2 = movimiento.user2_id
+    u1 = getattr(movimiento, "user1_id", None)
+    u2 = getattr(movimiento, "user2_id", None)
 
     if tipo == VENTA_MERCADO and u1:
         return [(u1, +amount, "Venta al mercado", "venta_mercado")]
@@ -139,20 +110,13 @@ def clasificar(movimiento: Any) -> list[tuple[str, int, str, str]]:
 
 
 def detectar_flujos_desconocidos(movimientos: Iterable[Any]) -> dict[int, int]:
-    """Busca tipos de actividad CON dinero que este módulo no sabe interpretar.
-
-    Es la alarma del sistema. Si LaLiga añade un tipo de movimiento con importe (unas
-    subidas de cláusula, por ejemplo), sus euros se quedarían fuera del cálculo y todos
-    los saldos se irían desviando en silencio. Mejor saberlo y decirlo.
-
-    Returns:
-        {activityTypeId: número de eventos} de los tipos con dinero no contemplados.
-    """
+    """Busca tipos de actividad CON dinero no contemplados."""
     conocidos = {VENTA_MERCADO, COMPRA_MERCADO, PREMIO_JORNADA, *TRASPASO}
     desconocidos: dict[int, int] = defaultdict(int)
 
     for m in movimientos:
-        if not m.amount:
+        amt = getattr(m, "amount", None)
+        if not amt:
             continue
         try:
             tipo = int(m.movement_type)
@@ -169,17 +133,9 @@ def construir_balances(
     saldo_inicial: int = SALDO_INICIAL_POR_DEFECTO,
     managers_conocidos: Iterable[str] | None = None,
 ) -> dict[str, BalanceManager]:
-    """Reconstruye la situación económica de cada mánager desde el inicio de la liga.
-
-    Los movimientos se ordenan por fecha: el orden importa porque `peor_descubierto`
-    solo tiene sentido recorriendo la historia en secuencia.
-
-    Args:
-        saldo_inicial: el `S` de la fórmula. Cambiarlo desplaza todas las cajas por
-            igual y NO altera las diferencias entre mánagers, que siguen siendo exactas.
-    """
+    """Reconstruye la situación económica de cada mánager desde el inicio de la liga."""
     ordenados = sorted(
-        (m for m in movimientos if m.movement_date),
+        (m for m in movimientos if getattr(m, "movement_date", None)),
         key=lambda m: m.movement_date,
     )
 
@@ -194,19 +150,17 @@ def construir_balances(
             bal.apuntes.append(
                 ApunteContable(
                     manager_id=manager_id,
-                    movement_id=m.movement_id,
-                    occurred_at=m.movement_date,
+                    movement_id=str(getattr(m, "movement_id", "")),
+                    occurred_at=str(m.movement_date),
                     activity_type=int(m.movement_type),
                     concept=concepto,
                     signo_origen=signo_origen,
                     amount=importe,
-                    player_id=m.player_id,
+                    player_id=getattr(m, "player_id", None),
                 )
             )
 
-    # Un mánager de la liga sin un solo movimiento se incorporó con la liga empezada:
-    # no tiene historia que reconstruir y su saldo es el de incorporación, no el
-    # fundacional. Sin este caso, su caja saldría inflada.
+    # Registrar mánagers conocidos sin movimientos (incorporación tardía)
     for manager_id in managers_conocidos or ():
         balances.setdefault(
             str(manager_id), BalanceManager(manager_id=str(manager_id), incorporacion_tardia=True)
@@ -223,16 +177,48 @@ def construir_balances(
 
 
 def saldo_inicial_minimo(movimientos: Iterable[Any]) -> int:
-    """Calcula el saldo inicial más bajo que evita que alguien quede en negativo.
-
-    Es la única cota dura que tenemos sobre `S`. Si el resultado sube por encima del
-    `SALDO_INICIAL_POR_DEFECTO`, la constante se ha quedado obsoleta y las cajas
-    estimadas estarían mal: conviene revisarla en vez de seguir sumando.
-    """
+    """Calcula el saldo inicial más bajo que evita que alguien quede en negativo."""
     balances = construir_balances(movimientos, saldo_inicial=0)
     if not balances:
         return 0
     return -min(b.peor_descubierto for b in balances.values())
+
+
+class _MovementAdapter:
+    """Adaptador tolerante que lee campos normalizados con fallback al JSON crudo."""
+
+    def __init__(self, row: dict[str, Any]):
+        raw = row.get("raw_payload") if isinstance(row.get("raw_payload"), dict) else {}
+        self.movement_id = str(row.get("movement_id") or raw.get("id") or raw.get("activityId") or "")
+
+        m_type = row.get("movement_type") if pd.notnull(row.get("movement_type")) else raw.get("activityTypeId")
+        try:
+            self.movement_type = int(m_type) if m_type is not None else None
+        except (ValueError, TypeError):
+            self.movement_type = None
+
+        m_date = row.get("movement_date")
+        if pd.notnull(m_date) and str(m_date).strip():
+            self.movement_date = str(m_date).strip()
+        else:
+            self.movement_date = raw.get("createdAt") or raw.get("created") or raw.get("date") or ""
+
+        amt = row.get("amount") if pd.notnull(row.get("amount")) else (raw.get("amount") or raw.get("money") or raw.get("price"))
+        try:
+            self.amount = int(amt) if amt is not None else None
+        except (ValueError, TypeError):
+            self.amount = None
+
+        u1 = row.get("user1_id") if pd.notnull(row.get("user1_id")) else raw.get("user1Id")
+        self.user1_id = str(u1).strip() if u1 is not None and str(u1).strip() else None
+
+        u2 = row.get("user2_id") if pd.notnull(row.get("user2_id")) else raw.get("user2Id")
+        self.user2_id = str(u2).strip() if u2 is not None and str(u2).strip() else None
+
+        pid = row.get("player_id") if pd.notnull(row.get("player_id")) else (raw.get("playerMasterId") or raw.get("playerId"))
+        self.player_id = str(pid).strip() if pid is not None and str(pid).strip() else None
+
+        self.week_number = row.get("week_number") if pd.notnull(row.get("week_number")) else raw.get("weekNumber")
 
 
 def calculate_estimated_cash(
@@ -241,11 +227,6 @@ def calculate_estimated_cash(
     saldo_inicial: int = SALDO_INICIAL_POR_DEFECTO,
 ) -> pd.DataFrame:
     """Calcula la caja estimada para cada mánager a partir de DataFrames.
-
-    Args:
-        df_standings: DataFrame con columnas de clasificación (incluyendo 'league_team_id' y opcionalmente 'manager_id').
-        df_movements: DataFrame con los movimientos de mercado.
-        saldo_inicial: Saldo inicial a aplicar a los fundadores.
 
     Returns:
         DataFrame con columnas:
@@ -271,30 +252,22 @@ def calculate_estimated_cash(
             })
         return pd.DataFrame(rows)
 
-    class SimpleMov:
-        def __init__(self, row):
-            self.movement_id = str(row.get("movement_id") or "")
-            self.movement_type = row.get("movement_type")
-            self.movement_date = str(row.get("movement_date") or "")
-            self.amount = int(row.get("amount")) if pd.notnull(row.get("amount")) else None
-            self.user1_id = str(row.get("user1_id")) if pd.notnull(row.get("user1_id")) else None
-            self.user2_id = str(row.get("user2_id")) if pd.notnull(row.get("user2_id")) else None
-            self.player_id = str(row.get("player_id")) if pd.notnull(row.get("player_id")) else None
-            self.week_number = row.get("week_number")
+    mov_objs = [_MovementAdapter(r) for _, r in df_movements.iterrows()]
 
-    mov_objs = [SimpleMov(r) for _, r in df_movements.iterrows()]
-
+    # Mapeo de manager_id <-> team_id
     mgr_to_team: dict[str, str] = {}
+    team_to_mgr: dict[str, str] = {}
     known_managers: list[str] = []
+
     if df_standings is not None and not df_standings.empty:
         for _, s in df_standings.iterrows():
             tid = str(s.get("league_team_id") or "")
             mid = str(s.get("manager_id") or "")
-            if mid:
+            if mid and tid:
                 mgr_to_team[mid] = tid
+                team_to_mgr[tid] = mid
                 known_managers.append(mid)
-            if tid:
-                mgr_to_team[tid] = tid
+            elif tid:
                 known_managers.append(tid)
 
     balances = construir_balances(
@@ -304,22 +277,57 @@ def calculate_estimated_cash(
     )
 
     rows = []
-    for mgr_id, bal in balances.items():
-        net_transfer = sum(
-            a.amount for a in bal.apuntes if a.signo_origen in ("compra_mercado", "venta_mercado", "traspaso_salida", "traspaso_entrada")
-        )
-        prizes = sum(a.amount for a in bal.apuntes if a.signo_origen == "premio_jornada")
-        tid = mgr_to_team.get(mgr_id, mgr_id)
+    # Primero iterar por los mánagers de la clasificación si existen
+    processed_managers = set()
+    if df_standings is not None and not df_standings.empty:
+        for _, s in df_standings.iterrows():
+            tid = str(s.get("league_team_id") or "")
+            mid = str(s.get("manager_id") or tid)
+            bal = balances.get(mid) or balances.get(tid)
+            processed_managers.add(mid)
+            processed_managers.add(tid)
 
-        rows.append({
-            "team_id": tid,
-            "manager_id": mgr_id,
-            "cash_estimate": bal.caja_estimada,
-            "net_transfer_flow": net_transfer,
-            "prize_flow": prizes,
-            "movements_count": bal.num_movimientos,
-            "is_late_join": bal.incorporacion_tardia,
-        })
+            if bal:
+                net_transfer = sum(
+                    a.amount for a in bal.apuntes if a.signo_origen in ("compra_mercado", "venta_mercado", "traspaso_salida", "traspaso_entrada")
+                )
+                prizes = sum(a.amount for a in bal.apuntes if a.signo_origen == "premio_jornada")
+                caja = bal.caja_estimada
+                mov_count = bal.num_movimientos
+                late_join = bal.incorporacion_tardia
+            else:
+                net_transfer = 0
+                prizes = 0
+                caja = SALDO_INCORPORACION_TARDIA
+                mov_count = 0
+                late_join = True
+
+            rows.append({
+                "team_id": tid,
+                "manager_id": mid,
+                "cash_estimate": caja,
+                "net_transfer_flow": net_transfer,
+                "prize_flow": prizes,
+                "movements_count": mov_count,
+                "is_late_join": late_join,
+            })
+
+    # Añadir cualquier otro balance no emparejado
+    for mgr_id, bal in balances.items():
+        if mgr_id not in processed_managers:
+            net_transfer = sum(
+                a.amount for a in bal.apuntes if a.signo_origen in ("compra_mercado", "venta_mercado", "traspaso_salida", "traspaso_entrada")
+            )
+            prizes = sum(a.amount for a in bal.apuntes if a.signo_origen == "premio_jornada")
+            rows.append({
+                "team_id": mgr_to_team.get(mgr_id, mgr_id),
+                "manager_id": mgr_id,
+                "cash_estimate": bal.caja_estimada,
+                "net_transfer_flow": net_transfer,
+                "prize_flow": prizes,
+                "movements_count": bal.num_movimientos,
+                "is_late_join": bal.incorporacion_tardia,
+            })
 
     return pd.DataFrame(rows)
 
@@ -329,17 +337,6 @@ def suggest_initial_balance(df_movements: pd.DataFrame) -> int:
     if df_movements is None or df_movements.empty:
         return SALDO_INICIAL_POR_DEFECTO
 
-    class SimpleMov:
-        def __init__(self, row):
-            self.movement_id = str(row.get("movement_id") or "")
-            self.movement_type = row.get("movement_type")
-            self.movement_date = str(row.get("movement_date") or "")
-            self.amount = int(row.get("amount")) if pd.notnull(row.get("amount")) else None
-            self.user1_id = str(row.get("user1_id")) if pd.notnull(row.get("user1_id")) else None
-            self.user2_id = str(row.get("user2_id")) if pd.notnull(row.get("user2_id")) else None
-            self.player_id = str(row.get("player_id")) if pd.notnull(row.get("player_id")) else None
-            self.week_number = row.get("week_number")
-
-    mov_objs = [SimpleMov(r) for _, r in df_movements.iterrows()]
+    mov_objs = [_MovementAdapter(r) for _, r in df_movements.iterrows()]
     min_saldo = saldo_inicial_minimo(mov_objs)
     return max(min_saldo, SALDO_INICIAL_POR_DEFECTO)

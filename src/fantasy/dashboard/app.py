@@ -1,7 +1,7 @@
 """Dashboard interactivo para análisis de mercado de LaLiga Fantasy en Streamlit.
 
 Diseño visual premium estilo Fantasy: Glassmorphism, Dark UI, fotos de futbolistas,
-ranking 1, 2, 3, 4, 5..., formato de dinero compacto (900k, 130M, etc.), badges de posición,
+ranking 1..N, formato de dinero compacto (900k, 130M, etc.), badges de posición,
 gráficos interactivos con Plotly y seguimiento en tiempo real del mercado.
 """
 
@@ -314,8 +314,8 @@ def load_gameweek_stats() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300)
-def load_league_data() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Carga la clasificación y movimientos de la liga privada."""
+def load_league_data(df_players: pd.DataFrame | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Carga la clasificación y movimientos enriquecidos de la liga privada."""
     client = get_supabase_client()
 
     standings = fetch_all(
@@ -323,11 +323,91 @@ def load_league_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     )
     df_standings = pd.DataFrame(standings) if standings else pd.DataFrame()
 
+    # Obtener el mapeo exacto de manager_id desde raw_snapshots si existe
+    team_to_mgr: dict[str, str] = {}
+    mgr_to_name: dict[str, str] = {}
+    try:
+        res_st_raw = (
+            client.table("raw_snapshots")
+            .select("payload")
+            .like("endpoint", "%standing%")
+            .order("id", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if res_st_raw.data and res_st_raw.data[0].get("payload"):
+            for item in res_st_raw.data[0]["payload"]:
+                team = item.get("team") or {}
+                mgr = team.get("manager") or {}
+                tid = str(team.get("id") or "")
+                mid = str(team.get("managerId") or mgr.get("id") or tid)
+                mname = mgr.get("managerName") or item.get("manager") or "Mánager"
+                if tid:
+                    team_to_mgr[tid] = mid
+                    mgr_to_name[mid] = mname
+    except Exception:
+        pass
+
+    if not df_standings.empty and "manager_id" not in df_standings.columns:
+        df_standings["manager_id"] = df_standings["league_team_id"].astype(str).map(team_to_mgr)
+
+    # Diccionario de jugadores para nombres en movimientos
+    p_dict = {}
+    if df_players is not None and not df_players.empty:
+        p_dict = dict(zip(df_players["id"].astype(str), df_players["name"]))
+
     movements = fetch_all(
         lambda: client.table("league_movements").select("*").order("movement_date", desc=True)
     )
-    df_movements = pd.DataFrame(movements) if movements else pd.DataFrame()
 
+    type_descriptions = {
+        1: "💰 Compra / Clausulazo",
+        2: "🤝 Venta a rival",
+        31: "🛒 Compra en mercado",
+        33: "💸 Venta al mercado",
+        6: "🏆 Premio de jornada",
+        9: "📋 Alineación confirmada",
+        10: "🔄 Cambio alineación",
+    }
+
+    mov_rows = []
+    for r in movements:
+        raw = r.get("raw_payload") if isinstance(r.get("raw_payload"), dict) else {}
+        pid = str(r.get("player_id") or raw.get("playerMasterId") or raw.get("playerId") or "")
+        pname = r.get("player_name") or p_dict.get(pid) or raw.get("playerName")
+        amt = r.get("amount") if pd.notnull(r.get("amount")) else raw.get("amount")
+        m_type = raw.get("activityTypeId") or r.get("movement_type")
+        m_date = r.get("movement_date") or raw.get("createdAt") or raw.get("created")
+        u1 = str(r.get("user1_id") or raw.get("user1Id") or "") or None
+        u2 = str(r.get("user2_id") or raw.get("user2Id") or "") or None
+
+        try:
+            m_type_int = int(m_type) if m_type is not None else 0
+        except (ValueError, TypeError):
+            m_type_int = 0
+
+        desc = type_descriptions.get(m_type_int, f"Tipo {m_type}")
+
+        # Formatear fecha legible
+        date_str = str(m_date).replace("T", " ")[:16] if m_date else "—"
+
+        mov_rows.append({
+            "movement_id": r.get("movement_id") or raw.get("id"),
+            "league_id": r.get("league_id"),
+            "movement_date": m_date,
+            "movement_date_str": date_str,
+            "activity_type": m_type_int,
+            "activity_desc": desc,
+            "player_id": pid if pid else None,
+            "player_name": pname if pname else ("—" if not amt else f"Jugador {pid}"),
+            "amount": int(amt) if amt is not None else None,
+            "user1_id": u1,
+            "user2_id": u2,
+            "manager_name": mgr_to_name.get(u1, "Mánager") if u1 else "—",
+            "raw_payload": raw,
+        })
+
+    df_movements = pd.DataFrame(mov_rows) if mov_rows else pd.DataFrame()
     return df_standings, df_movements
 
 
@@ -402,7 +482,7 @@ def main():
         with st.spinner("Conectando con la base de datos de LaLiga Fantasy..."):
             df_players, df_daily, df_teams = load_market_data()
             df_league_market = load_league_market()
-            df_standings, df_movements = load_league_data()
+            df_standings, df_movements = load_league_data(df_players)
     except Exception as e:
         st.error(f"❌ Error al conectar con Supabase: {e}")
         st.stop()
@@ -733,26 +813,26 @@ def main():
         # ORDENACIÓN DEL RANKING
         if has_variation:
             if sel_orden == "🚀 Mayor subida (%)":
-                df_sorted = df_view.sort_values(by="pct_change", ascending=False)
+                df_sorted = df_view.sort_values(by="pct_change", ascending=False, na_position="last")
             elif sel_orden == "💶 Mayor subida (€)":
-                df_sorted = df_view.sort_values(by="diff_value", ascending=False)
+                df_sorted = df_view.sort_values(by="diff_value", ascending=False, na_position="last")
             elif sel_orden == "💎 Mayor valor (€)":
-                df_sorted = df_view.sort_values(by="market_value", ascending=False)
+                df_sorted = df_view.sort_values(by="market_value", ascending=False, na_position="last")
             elif sel_orden == "🔻 Mayor caída (%)":
-                df_sorted = df_view.sort_values(by="pct_change", ascending=True)
+                df_sorted = df_view.sort_values(by="pct_change", ascending=True, na_position="last")
             elif sel_orden == "🏆 Más puntos":
-                df_sorted = df_view.sort_values(by="points", ascending=False)
+                df_sorted = df_view.sort_values(by="points", ascending=False, na_position="last")
             elif sel_orden == "📈 Mejor media":
-                df_sorted = df_view.sort_values(by="average_points", ascending=False)
+                df_sorted = df_view.sort_values(by="average_points", ascending=False, na_position="last")
             else:
                 df_sorted = df_view.sort_values(by="name", ascending=True)
         else:
             if sel_orden == "💎 Mayor valor (€)":
-                df_sorted = df_view.sort_values(by="market_value", ascending=False)
+                df_sorted = df_view.sort_values(by="market_value", ascending=False, na_position="last")
             elif sel_orden == "🏆 Más puntos":
-                df_sorted = df_view.sort_values(by="points", ascending=False)
+                df_sorted = df_view.sort_values(by="points", ascending=False, na_position="last")
             elif sel_orden == "📈 Mejor media":
-                df_sorted = df_view.sort_values(by="average_points", ascending=False)
+                df_sorted = df_view.sort_values(by="average_points", ascending=False, na_position="last")
             else:
                 df_sorted = df_view.sort_values(by="name", ascending=True)
 
@@ -917,7 +997,7 @@ def main():
             )
             df_min["pts_por_millon"] = df_min.apply(
                 lambda r: (r["puntos"] / (r["market_value"] / 1_000_000))
-                if r.get("market_value") and r["market_value"] > 0
+                if pd.notnull(r.get("market_value")) and r["market_value"] > 0
                 else None,
                 axis=1,
             )
@@ -962,7 +1042,7 @@ def main():
             )
 
     # =========================================================================
-    # PESTAÑA 4: LIGA PRIVADA Y CAJA (FORMATO COMPACTO)
+    # PESTAÑA 4: LIGA PRIVADA Y CAJA (FORMATO COMPACTO + CAJA ESTIMADA REAL)
     # =========================================================================
     with tab_league:
         st.subheader("🏆 Clasificación y Estimación de Caja de Rivales")
@@ -1021,16 +1101,18 @@ def main():
             st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
 
             # Estimación de caja por movimientos
-            cajas_estimadas = calculate_estimated_cash(df_standings, df_movements)
+            cajas_estimadas = calculate_estimated_cash(df_cur_standings, df_movements)
             if not cajas_estimadas.empty:
                 st.markdown("#### 💰 Estimación de Caja Disponible")
                 st.caption(
-                    "Calculada a partir del saldo inicial y el flujo neto de fichajes, ventas y premios. "
-                    "Te da una referencia clara del poder de puja de tus rivales."
+                    "Calculada a partir del saldo inicial y el flujo neto acumulado de fichajes, ventas y premios. "
+                    "Las diferencias relativas entre mánagers son exactas."
                 )
+
+                # Unir por team_id o manager_id de forma robusta
                 df_tabla_caja = pd.merge(
                     df_cur_standings[["league_team_id", "position", "team_name", "manager_name", "points", "team_value"]],
-                    cajas_estimadas[["team_id", "cash_estimate", "net_transfer_flow", "prize_flow"]],
+                    cajas_estimadas[["team_id", "cash_estimate", "net_transfer_flow", "prize_flow", "movements_count"]],
                     left_on="league_team_id",
                     right_on="team_id",
                     how="left",
@@ -1043,10 +1125,10 @@ def main():
 
                 st.dataframe(
                     df_tabla_caja[
-                        ["position", "team_name", "manager_name", "points", "team_value_fmt", "cash_estimate_fmt", "net_transfer_flow_fmt", "prize_flow_fmt"]
+                        ["position", "team_name", "manager_name", "points", "team_value_fmt", "cash_estimate_fmt", "net_transfer_flow_fmt", "prize_flow_fmt", "movements_count"]
                     ].sort_values("position"),
                     column_config={
-                        "position": st.column_config.NumberColumn("Posición"),
+                        "position": st.column_config.NumberColumn("Posición", format="%d"),
                         "team_name": st.column_config.TextColumn("Equipo"),
                         "manager_name": st.column_config.TextColumn("Mánager"),
                         "points": st.column_config.NumberColumn("Puntos"),
@@ -1054,26 +1136,30 @@ def main():
                         "cash_estimate_fmt": st.column_config.TextColumn("Caja Estimada"),
                         "net_transfer_flow_fmt": st.column_config.TextColumn("Flujo Fichajes"),
                         "prize_flow_fmt": st.column_config.TextColumn("Premios"),
+                        "movements_count": st.column_config.NumberColumn("Movs"),
                     },
                     use_container_width=True,
                     hide_index=True,
                 )
 
         if not df_movements.empty:
-            st.markdown("#### 🔄 Últimos Movimientos de Mercado")
+            st.markdown("#### 🔄 Últimos Movimientos y Actividad de la Liga")
             df_movements_display = df_movements.copy()
             df_movements_display["amount_fmt"] = df_movements_display["amount"].apply(lambda v: format_money(v))
 
+            cols_mov = ["movement_date_str", "activity_desc", "player_name", "manager_name", "amount_fmt"]
             st.dataframe(
-                df_movements_display[["movement_date", "player_name", "amount_fmt", "movement_type"]],
+                df_movements_display[cols_mov].dropna(subset=["activity_desc"]),
                 column_config={
-                    "movement_date": st.column_config.DatetimeColumn("Fecha"),
+                    "movement_date_str": st.column_config.TextColumn("Fecha"),
+                    "activity_desc": st.column_config.TextColumn("Tipo de Actividad"),
                     "player_name": st.column_config.TextColumn("Jugador"),
+                    "manager_name": st.column_config.TextColumn("Mánager"),
                     "amount_fmt": st.column_config.TextColumn("Importe"),
-                    "movement_type": st.column_config.TextColumn("Tipo"),
                 },
                 use_container_width=True,
                 hide_index=True,
+                height=400,
             )
 
 
