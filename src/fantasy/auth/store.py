@@ -162,6 +162,19 @@ class HybridTokenStore(BaseTokenStore):
         file_token = self.file_store.load()
         if file_token:
             logger.debug(f"Token cargado desde archivo local {self.file_store.file_path}")
+            # Sembrar en Supabase, igual que con la variable de entorno.
+            #
+            # Sin esto, `auth_state` solo se rellena cuando toca refrescar, y como el
+            # access_token dura 24 h, una ejecución local recién capturado el token no
+            # refresca nada y deja la tabla vacía. GitHub Actions no tiene el fichero
+            # local, así que se queda sin token y falla con AuthMissing. Sembrar aquí
+            # es lo que hace que ejecutar en local deje el cron listo para funcionar.
+            if config.SUPABASE_URL and config.SUPABASE_SERVICE_KEY:
+                try:
+                    self.supabase_store.save(file_token)
+                    logger.info("Token del fichero local sembrado en Supabase (auth_state).")
+                except Exception as e:
+                    logger.warning(f"No se pudo sembrar el token en Supabase: {e}")
             return file_token
 
         return None

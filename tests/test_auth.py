@@ -1,5 +1,6 @@
 """Tests unitarios para el módulo de autenticación (sin red real, usando responses)."""
 
+from pathlib import Path
 import json
 import time
 import pytest
@@ -212,3 +213,67 @@ def test_token_se_cachea_y_no_relee_el_almacen():
         assert get_access_token() == "tok"
 
     assert store.loads == 1, f"El almacén se leyó {store.loads} veces; debería ser 1"
+
+
+def test_token_de_fichero_se_siembra_en_supabase(monkeypatch):
+    """Cargar del fichero local debe propagar el token a Supabase.
+
+    Regresión: `save()` solo se llamaba al refrescar. Con un access_token de 24 h,
+    una ejecución local recién capturado el token no refrescaba nada y dejaba
+    `auth_state` vacía; GitHub Actions, que no tiene el fichero, fallaba con
+    AuthMissing. Es un fallo invisible en local y solo detectable en CI.
+    """
+    from fantasy import config
+    from fantasy.auth.store import HybridTokenStore, FileTokenStore, EnvTokenStore, SupabaseTokenStore
+    from fantasy.auth.tokens import TokenSet
+
+    monkeypatch.setattr(config, "SUPABASE_URL", "https://fake.supabase.co")
+    monkeypatch.setattr(config, "SUPABASE_SERVICE_KEY", "fake-key")
+
+    token = TokenSet(access_token="del-fichero", refresh_token="rt", expires_at=9999999999)
+
+    class FileStub(FileTokenStore):
+        def __init__(self):
+            self.file_path = Path("secrets/token.json")
+
+        def load(self):
+            return token
+
+    class SupabaseSpy(SupabaseTokenStore):
+        def __init__(self):
+            self.saved = None
+
+        def load(self):
+            return None  # tabla vacía, como en el fallo real
+
+        def save(self, tokens):
+            self.saved = tokens
+
+    spy = SupabaseSpy()
+    store = HybridTokenStore(file_store=FileStub(), env_store=EnvTokenStore(raw_json=None), supabase_store=spy)
+
+    assert store.load().access_token == "del-fichero"
+    assert spy.saved is not None, "El token del fichero no se sembró en Supabase"
+    assert spy.saved.access_token == "del-fichero"
+
+
+def test_sin_token_en_ningun_almacen_lanza_authmissing():
+    """El mensaje debe decir que NO hay token, no que haya caducado."""
+    import pytest
+    from fantasy.auth import get_access_token
+    from fantasy.auth.errors import AuthMissing
+    from fantasy.auth.store import BaseTokenStore, set_token_store
+
+    class EmptyStore(BaseTokenStore):
+        def load(self):
+            return None
+
+        def save(self, tokens):
+            pass
+
+    set_token_store(EmptyStore())
+    with pytest.raises(AuthMissing) as exc:
+        get_access_token()
+
+    assert "No hay ningún token almacenado" in str(exc.value)
+    assert "caducado" not in str(exc.value).split("Detalle")[0]

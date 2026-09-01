@@ -2,13 +2,13 @@
 
 import logging
 from fantasy.auth.b2c import refresh_access_token
-from fantasy.auth.errors import AuthExpired, AuthBackendChanged, AuthConfigMissing
+from fantasy.auth.errors import AuthExpired, AuthBackendChanged, AuthConfigMissing, AuthMissing
 from fantasy.auth.store import get_token_store
 from fantasy.auth.tokens import TokenSet
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["get_access_token", "AuthExpired", "AuthBackendChanged", "AuthConfigMissing"]
+__all__ = ["get_access_token", "AuthExpired", "AuthBackendChanged", "AuthConfigMissing", "AuthMissing"]
 
 # Token cacheado en memoria durante la vida del proceso.
 #
@@ -50,10 +50,7 @@ def get_access_token(force_refresh: bool = False) -> str:
         _cached_tokens = current_tokens
 
     if not current_tokens or not current_tokens.access_token:
-        raise AuthExpired(
-            "No se encontró ningún token configurado. Coloca el token capturado en secrets/token.json "
-            "o define FANTASY_TOKEN_JSON en las variables de entorno. Ver README §Captura de token."
-        )
+        raise AuthMissing()
 
     # Verificar si es necesario refrescar
     if force_refresh or current_tokens.is_expired():

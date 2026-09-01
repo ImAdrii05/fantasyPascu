@@ -45,6 +45,32 @@ class AuthExpired(FantasyAuthError):
         super().__init__(message)
 
 
+class AuthMissing(AuthExpired):
+    """Lanzada cuando NO hay ningún token almacenado en ninguno de los almacenes.
+
+    Se distingue de `AuthExpired` porque la causa y la solución son distintas: aquí no
+    ha caducado nada, sencillamente no hay token donde buscarlo. Decir "ha caducado"
+    manda a recapturar cuando el problema real puede ser que la tabla `auth_state` de
+    Supabase esté vacía o que los secrets no lleguen al job.
+
+    Hereda de AuthExpired para no romper a quien ya captura ese error.
+    """
+
+    def __init__(self, details: str = ""):
+        message = (
+            "No hay ningún token almacenado. Se ha buscado, por este orden, en: la tabla "
+            "`auth_state` de Supabase, la variable FANTASY_TOKEN_JSON y el fichero local "
+            "secrets/token.json.\n"
+            "  - En local: captura el token siguiendo el README §Captura de token.\n"
+            "  - En CI: la tabla `auth_state` está vacía o los secrets de Supabase no "
+            "llegan al job. Ejecuta el job una vez en local con el token puesto; eso "
+            "siembra `auth_state` y deja el cron operativo."
+        )
+        if details:
+            message += f" Detalle: {details}"
+        FantasyAuthError.__init__(self, message)
+
+
 class AuthBackendChanged(FantasyAuthError):
     """Lanzada cuando la respuesta de Azure B2C tiene un formato inesperado (HTML, 404, etc.)."""
 

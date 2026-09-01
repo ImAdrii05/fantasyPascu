@@ -143,8 +143,11 @@ Los valores de Azure B2C (`B2C_TENANT`, `B2C_CLIENT_ID`, `B2C_POLICY`, `B2C_SCOP
 **no** hacen falta: están verificados y por defecto en `config.py`. Si LaLiga los
 cambia, se sobreescriben añadiendo el secret correspondiente, sin tocar código.
 
-**El token tampoco es un secret.** Tras la primera ejecución local, el `TokenSet` vive
-en la tabla `auth_state` de Supabase, y de ahí lo lee el job. Es lo que resuelve la
+**El token tampoco es un secret.** Vive en la tabla `auth_state` de Supabase y de ahí
+lo lee el job. Para que llegue ahí hay que **ejecutar el job una vez en local** con
+`secrets/token.json` puesto y las credenciales de Supabase en el `.env`: al cargar el
+token del fichero, se siembra automáticamente en `auth_state`. Sin ese paso la tabla
+queda vacía y el cron falla con `AuthMissing`. Es lo que resuelve la
 rotación del `refresh_token`: si se guardara en un secret de GitHub, quedaría obsoleto
 en cuanto Azure B2C lo rotara, y el cron moriría a los pocos días. `FANTASY_TOKEN_JSON`
 existe solo como arranque de emergencia si la tabla estuviera vacía.
