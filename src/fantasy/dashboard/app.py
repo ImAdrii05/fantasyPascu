@@ -10,6 +10,7 @@ import pandas as pd
 from supabase import create_client
 
 from fantasy import config
+from fantasy.store.supabase import fetch_all
 
 # Configuración de página
 st.set_page_config(
@@ -27,24 +28,53 @@ def get_supabase_client():
     return create_client(config.SUPABASE_URL, config.SUPABASE_SERVICE_KEY)
 
 
+def _df(rows: list[dict], columns: list[str]) -> pd.DataFrame:
+    """DataFrame a partir de filas, con columnas garantizadas aunque venga vacío."""
+    return pd.DataFrame(rows) if rows else pd.DataFrame(columns=columns)
+
+
 @st.cache_data(ttl=300)
 def load_market_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Carga los datos de jugadores, snapshots diarios y equipos desde Supabase."""
+    """Carga jugadores, snapshots diarios y equipos desde Supabase.
+
+    Todas las lecturas van paginadas: PostgREST corta en 1000 filas SIN avisar, y
+    `player_daily` supera ese techo al segundo día de histórico (813 filas/día).
+    Sin paginar, el dashboard mostraría datos incompletos en silencio.
+    """
     client = get_supabase_client()
 
-    # 1. Equipos
-    teams_res = client.table("teams").select("id, name, short_name, badge_url").execute()
-    df_teams = pd.DataFrame(teams_res.data) if teams_res.data else pd.DataFrame(columns=["id", "name", "short_name", "badge_url"])
+    teams = fetch_all(lambda: client.table("teams").select("id, name, short_name, badge_url"))
+    df_teams = _df(teams, ["id", "name", "short_name", "badge_url"])
 
-    # 2. Jugadores
-    players_res = client.table("players").select("id, name, nickname, position, position_id, team_id, status, image_url").execute()
-    df_players = pd.DataFrame(players_res.data) if players_res.data else pd.DataFrame(columns=["id", "name", "nickname", "position", "position_id", "team_id", "status"])
+    players = fetch_all(
+        lambda: client.table("players").select(
+            "id, name, nickname, position, position_id, team_id, status, image_url"
+        )
+    )
+    df_players = _df(players, ["id", "name", "nickname", "position", "position_id", "team_id", "status", "image_url"])
 
-    # 3. Snapshots diarios
-    daily_res = client.table("player_daily").select("snapshot_date, player_id, market_value, points, average_points, played_matches, minutes_played").execute()
-    df_daily = pd.DataFrame(daily_res.data) if daily_res.data else pd.DataFrame(columns=["snapshot_date", "player_id", "market_value", "points", "average_points"])
+    daily = fetch_all(
+        lambda: client.table("player_daily")
+        .select("snapshot_date, player_id, market_value, points, average_points, played_matches, minutes_played")
+        .order("snapshot_date")
+        .order("player_id")
+    )
+    df_daily = _df(daily, ["snapshot_date", "player_id", "market_value", "points", "average_points", "played_matches", "minutes_played"])
 
     return df_players, df_daily, df_teams
+
+
+@st.cache_data(ttl=300)
+def load_gameweek_stats() -> pd.DataFrame:
+    """Carga las estadísticas por jornada (minutos, goles, tarjetas...)."""
+    client = get_supabase_client()
+    rows = fetch_all(
+        lambda: client.table("player_gameweek_stats")
+        .select("player_id, gameweek, points, minutes, goals, assists, yellow_cards, red_cards, saves")
+        .order("player_id")
+        .order("gameweek")
+    )
+    return _df(rows, ["player_id", "gameweek", "points", "minutes", "goals", "assists", "yellow_cards", "red_cards", "saves"])
 
 
 @st.cache_data(ttl=300)
@@ -52,10 +82,14 @@ def load_league_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     """Carga la clasificación y movimientos de la liga privada desde Supabase."""
     client = get_supabase_client()
 
-    standings_res = client.table("league_standings").select("*").order("snapshot_date", desc=True).order("position").execute()
-    df_standings = pd.DataFrame(standings_res.data) if standings_res.data else pd.DataFrame()
+    standings = fetch_all(
+        lambda: client.table("league_standings").select("*").order("snapshot_date", desc=True).order("position")
+    )
+    df_standings = pd.DataFrame(standings) if standings else pd.DataFrame()
 
-    movements_res = client.table("league_movements").select("*").order("movement_date", desc=True).limit(100).execute()
+    movements_res = (
+        client.table("league_movements").select("*").order("movement_date", desc=True).limit(100).execute()
+    )
     df_movements = pd.DataFrame(movements_res.data) if movements_res.data else pd.DataFrame()
 
     return df_standings, df_movements
@@ -160,7 +194,9 @@ def main():
         ]
 
     # Pestañas principales
-    tab_market, tab_evolution, tab_league = st.tabs(["💰 Mercado Actual", "📈 Evolución de Precio", "🏆 Liga Privada"])
+    tab_market, tab_evolution, tab_minutes, tab_league = st.tabs(
+        ["💰 Mercado Actual", "📈 Evolución de Precio", "⏱️ Minutos y Titularidad", "🏆 Liga Privada"]
+    )
 
     # PESTAÑA 1: MERCADO
     with tab_market:
@@ -231,7 +267,89 @@ def main():
             else:
                 st.info("Solo existe un registro diario para este jugador. El gráfico se trazará cuando se acumulen más días.")
 
-    # PESTAÑA 3: LIGA PRIVADA
+    # PESTAÑA 3: MINUTOS Y TITULARIDAD
+    with tab_minutes:
+        st.subheader("Minutos recientes como proxy de titularidad")
+        st.caption(
+            "No existe un dato fiable de probabilidad de alineación, ni siquiera para LaLiga. "
+            "Esto NO predice si un jugador será titular: solo muestra los minutos que ha jugado "
+            "en las últimas jornadas, que es el mejor indicador objetivo disponible. Para una "
+            "estimación de verdad, consulta fuentes curadas por humanos (Futbolfantasy, "
+            "Jornada Perfecta, Analítica Fantasy)."
+        )
+
+        df_gw = load_gameweek_stats()
+        if df_gw.empty:
+            st.info("Todavía no hay estadísticas por jornada. Se rellenan con el snapshot diario.")
+        else:
+            max_gw = int(df_gw["gameweek"].max())
+            ventana = st.slider(
+                "Últimas N jornadas a considerar",
+                min_value=1,
+                max_value=max_gw,
+                value=min(5, max_gw),
+            )
+            desde = max_gw - ventana + 1
+            df_win = df_gw[df_gw["gameweek"] >= desde]
+
+            resumen = (
+                df_win.groupby("player_id")
+                .agg(
+                    jornadas=("gameweek", "count"),
+                    minutos=("minutes", "sum"),
+                    puntos=("points", "sum"),
+                    goles=("goals", "sum"),
+                )
+                .reset_index()
+            )
+            # Porcentaje de minutos sobre el máximo posible (90 por jornada disputada).
+            resumen["pct_minutos"] = (resumen["minutos"] / (ventana * 90) * 100).clip(upper=100)
+
+            df_min = pd.merge(df_players, resumen, left_on="id", right_on="player_id", how="inner")
+            df_min = pd.merge(
+                df_min, df_latest[["player_id", "market_value"]], on="player_id", how="left"
+            )
+            # Puntos por millón: barato y productivo es exactamente lo que buscamos.
+            df_min["pts_por_millon"] = df_min.apply(
+                lambda r: (r["puntos"] / (r["market_value"] / 1_000_000))
+                if r.get("market_value") and r["market_value"] > 0
+                else None,
+                axis=1,
+            )
+
+            if sel_position != "Todas":
+                df_min = df_min[df_min["position"] == sel_position]
+            if sel_team != "Todos":
+                df_min = df_min[df_min["team_name"] == sel_team]
+            if search_query:
+                df_min = df_min[df_min["name"].str.lower().str.contains(search_query, na=False)]
+
+            solo_titulares = st.checkbox("Solo jugadores con más del 60% de los minutos", value=False)
+            if solo_titulares:
+                df_min = df_min[df_min["pct_minutos"] > 60]
+
+            st.dataframe(
+                df_min[
+                    ["name", "team_name", "position", "market_value", "minutos", "pct_minutos", "puntos", "goles", "pts_por_millon"]
+                ].sort_values("pts_por_millon", ascending=False),
+                column_config={
+                    "name": st.column_config.TextColumn("Jugador"),
+                    "team_name": st.column_config.TextColumn("Equipo"),
+                    "position": st.column_config.TextColumn("Posición"),
+                    "market_value": st.column_config.NumberColumn("Valor (€)", format="%d €"),
+                    "minutos": st.column_config.NumberColumn("Minutos"),
+                    "pct_minutos": st.column_config.ProgressColumn(
+                        "% Minutos", min_value=0, max_value=100, format="%.0f%%"
+                    ),
+                    "puntos": st.column_config.NumberColumn("Puntos"),
+                    "goles": st.column_config.NumberColumn("Goles"),
+                    "pts_por_millon": st.column_config.NumberColumn("Pts / M€", format="%.2f"),
+                },
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    # PESTAÑA 4: LIGA PRIVADA
     with tab_league:
         st.subheader("Estado de la Liga Privada")
         if df_standings.empty:
@@ -251,6 +369,11 @@ def main():
                 },
                 use_container_width=True,
                 hide_index=True,
+            )
+            st.caption(
+                "⚠️ La columna de valor es el precio de la PLANTILLA, no el dinero disponible. "
+                "La API devuelve el saldo en caja de los rivales siempre a nulo (comprobado), "
+                "así que no sabemos cuánto puede pujar cada uno. No lo deduzcas del valor de plantilla."
             )
 
         if not df_movements.empty:

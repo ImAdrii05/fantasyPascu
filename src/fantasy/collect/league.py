@@ -18,11 +18,12 @@ def collect_league(
 ) -> dict[str, int]:
     """Descarga el mercado, la clasificación y el histórico de actividad de la liga privada.
 
-    NOTA DE ARQUITECTURA:
-    Pendiente de verificar con la respuesta real de la API tras la captura de token
-    si existe algún campo de saldo líquido disponible en caja de los rivales.
-    Hasta confirmar con la respuesta en vivo, se almacenan estrictamente el valor
-    de plantilla (`team_value`), puntos y movimientos.
+    NOTA DE ARQUITECTURA (VERIFICADO contra la API real):
+    El endpoint de clasificación devuelve `teamMoney`, pero SIEMPRE a NULL para los
+    rivales (en el equipo propio la clave ni aparece). Por tanto NO tenemos el dinero
+    líquido de los rivales: solo valor de plantilla, puntos y movimientos. El saldo
+    propio sí está disponible, pero por otra vía (`team.money` en el endpoint de ligas).
+    No estimar el saldo ajeno a partir del valor de plantilla: sería inventárselo.
 
     Returns:
         Diccionario con conteos de filas afectadas: {"league_market": N, "league_standings": N, "league_movements": N}.

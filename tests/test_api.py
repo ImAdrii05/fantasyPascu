@@ -4,7 +4,9 @@ import responses
 import pytest
 
 from fantasy.api import FantasyApiClient, FantasyApiError
-from fantasy.api.models import Team, Player, LeagueStanding, LeagueMovement
+from fantasy.api.models import Team, Player, LeagueStanding, LeagueMovement, PlayerGameweekStat
+from fantasy.collect.players import extract_gameweek_stats
+from fantasy.collect.player_details import parse_player_detail
 from fantasy.auth.store import BaseTokenStore, set_token_store
 from fantasy.auth.tokens import TokenSet
 
@@ -157,3 +159,80 @@ def test_extract_gameweek_stats():
     assert stats[2].gameweek == 1
     assert stats[2].points == 6
 
+
+
+# ---------------------------------------------------------------------------
+# Detalle de jugador: única fuente de minutos y estadísticas finas.
+# Los payloads de abajo son la forma REAL verificada contra la API en vivo.
+# ---------------------------------------------------------------------------
+
+REAL_DETAIL_PAYLOAD = {
+    "playerMaster": {
+        "id": "68",
+        "nickname": "Unai Simón",
+        "playerStats": [
+            {
+                "weekNumber": 3,
+                "totalPoints": 10,
+                "stats": {
+                    "mins_played": [90, 2],
+                    "goals": [0, 0],
+                    "goal_assist": [0, 0],
+                    "saves": [2, 1],
+                    "yellow_card": [0, 0],
+                    "red_card": [0, 0],
+                    "goals_conceded": [1, -1],
+                },
+            },
+            {
+                "weekNumber": 2,
+                "totalPoints": 1,
+                "stats": {"mins_played": [45, 1], "goals": [1, 5], "yellow_card": [1, -1]},
+            },
+        ],
+    }
+}
+
+
+def test_gameweek_stat_from_detail_extrae_valor_no_puntos():
+    """Cada métrica llega como par [valor, puntos]; se guarda el valor."""
+    week = REAL_DETAIL_PAYLOAD["playerMaster"]["playerStats"][0]
+    stat = PlayerGameweekStat.from_detail("68", week)
+
+    assert stat is not None
+    assert stat.gameweek == 3
+    assert stat.points == 10
+    # 90 es el valor; 2 son los puntos que otorga. No confundirlos.
+    assert stat.minutes == 90
+    assert stat.saves == 2
+    assert stat.goals_conceded == 1
+    # El diccionario completo se conserva para métricas futuras.
+    assert stat.stats is not None and "mins_played" in stat.stats
+
+
+def test_gameweek_stat_from_detail_sin_weeknumber_devuelve_none():
+    assert PlayerGameweekStat.from_detail("68", {"totalPoints": 5, "stats": {}}) is None
+
+
+def test_parse_player_detail_recorre_playermaster():
+    stats = parse_player_detail(REAL_DETAIL_PAYLOAD, "68")
+    assert len(stats) == 2
+    assert {s.gameweek for s in stats} == {2, 3}
+    assert sum(s.minutes for s in stats) == 135
+
+
+def test_parse_player_detail_tolera_payload_inesperado():
+    """Si el backend cambia de forma, se devuelve vacío en vez de reventar."""
+    assert parse_player_detail(None, "68") == []
+    assert parse_player_detail({}, "68") == []
+    assert parse_player_detail({"playerMaster": {"playerStats": "roto"}}, "68") == []
+
+
+def test_extract_gameweek_stats_lee_weekpoints_reales():
+    """El listado global usa `weekPoints`, no `playerStats`. Formato verificado."""
+    raw = [{"id": "68", "weekPoints": [{"weekNumber": 1, "points": 10}, {"weekNumber": 2, "points": 1}]}]
+    stats = extract_gameweek_stats(raw)
+    assert len(stats) == 2
+    assert stats[0].points == 10
+    # El listado no trae minutos: deben quedar a None, nunca a 0.
+    assert stats[0].minutes is None

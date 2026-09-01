@@ -60,8 +60,12 @@ CREATE TABLE IF NOT EXISTS player_gameweek_stats (
 );
 
 -- 5. Clasificación y estado de la Liga Privada
--- NOTA: Pendiente de verificar con la respuesta real de la API tras la captura de token.
--- No asumir ni inventar saldo en caja (available_cash) hasta inspeccionar el payload real.
+-- NOTA (VERIFICADO contra la API real, no es una suposición):
+-- El endpoint de clasificación SÍ incluye un campo `teamMoney`, pero llega SIEMPRE
+-- a NULL para los rivales. En el equipo propio la clave ni siquiera aparece; el saldo
+-- propio se obtiene por otra vía (campo `team.money` del endpoint de ligas del usuario).
+-- Conclusión: NO disponemos del dinero líquido de los rivales, solo de `teamValue`,
+-- puntos y movimientos. No estimar ni inferir el saldo ajeno a partir de esos datos.
 CREATE TABLE IF NOT EXISTS league_standings (
     snapshot_date DATE NOT NULL,
     league_team_id TEXT NOT NULL,

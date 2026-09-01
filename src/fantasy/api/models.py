@@ -3,6 +3,16 @@
 from dataclasses import dataclass, asdict
 from typing import Any
 
+# Mapeo de positionId -> nombre de posición, verificado contra la respuesta real
+# del listado global de jugadores (el único campo que llega es `positionId`).
+POSITION_BY_ID: dict[int, str] = {
+    1: "Portero",
+    2: "Defensa",
+    3: "Centrocampista",
+    4: "Delantero",
+    5: "Entrenador",
+}
+
 
 @dataclass
 class Team:
@@ -62,14 +72,15 @@ class Player:
         nickname = data.get("nickname")
         slug = data.get("slug")
 
-        # Posición
-        pos = data.get("position")
+        # Posición. VERIFICADO contra la API real: el listado global NO devuelve
+        # un campo `position` de texto, solo `positionId` como cadena ("1".."5").
         position_id = data.get("positionId")
         if position_id is not None:
             try:
                 position_id = int(position_id)
             except (ValueError, TypeError):
                 position_id = None
+        pos = data.get("position") or POSITION_BY_ID.get(position_id)
 
         # Equipo
         team_id = None
@@ -157,18 +168,74 @@ class PlayerGameweekStat:
     assists: int | None = None
     yellow_cards: int | None = None
     red_cards: int | None = None
+    second_yellow_cards: int | None = None
+    own_goals: int | None = None
+    saves: int | None = None
+    goals_conceded: int | None = None
+    stats: dict[str, Any] | None = None
 
     @classmethod
     def from_api(cls, player_id: str | int, gameweek: int, data: dict[str, Any]) -> "PlayerGameweekStat":
+        """Construye desde el listado global, donde cada jornada solo trae puntos.
+
+        Formato real verificado: `weekPoints` = [{"weekNumber": N, "points": P}, ...].
+        """
         return cls(
             player_id=str(player_id),
             gameweek=int(gameweek),
-            points=data.get("points"),
+            points=data.get("points") if data.get("points") is not None else data.get("totalPoints"),
             minutes=data.get("minutes"),
             goals=data.get("goals"),
             assists=data.get("assists"),
             yellow_cards=data.get("yellowCards") or data.get("yellow_cards"),
             red_cards=data.get("redCards") or data.get("red_cards"),
+        )
+
+    @classmethod
+    def from_detail(cls, player_id: str | int, data: dict[str, Any]) -> "PlayerGameweekStat | None":
+        """Construye desde el detalle del jugador, que sí trae minutos y estadísticas finas.
+
+        Formato real verificado (`playerMaster.playerStats[]`):
+            {"weekNumber": 3, "totalPoints": 10, "stats": {"mins_played": [90, 2], ...}}
+        Cada métrica es un par [valor, puntos]; aquí se guarda el VALOR, y el
+        diccionario íntegro se conserva en `stats` para no perder nada.
+        """
+        gw = data.get("weekNumber")
+        if gw is None:
+            return None
+        try:
+            gw = int(gw)
+        except (ValueError, TypeError):
+            return None
+
+        raw_stats = data.get("stats") or {}
+
+        def value_of(key: str) -> int | None:
+            """Extrae el valor (primer elemento) del par [valor, puntos]."""
+            pair = raw_stats.get(key)
+            if isinstance(pair, (list, tuple)) and pair:
+                try:
+                    return int(pair[0])
+                except (ValueError, TypeError):
+                    return None
+            if isinstance(pair, (int, float)):
+                return int(pair)
+            return None
+
+        return cls(
+            player_id=str(player_id),
+            gameweek=gw,
+            points=data.get("totalPoints"),
+            minutes=value_of("mins_played"),
+            goals=value_of("goals"),
+            assists=value_of("goal_assist"),
+            yellow_cards=value_of("yellow_card"),
+            red_cards=value_of("red_card"),
+            second_yellow_cards=value_of("second_yellow_card"),
+            own_goals=value_of("own_goals"),
+            saves=value_of("saves"),
+            goals_conceded=value_of("goals_conceded"),
+            stats=raw_stats or None,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -192,12 +259,21 @@ class LeagueStanding:
         manager = team.get("manager") or {} if isinstance(team, dict) else {}
 
         team_id = str(data.get("id") or (team.get("id") if isinstance(team, dict) else "") or "")
-        team_name = data.get("name") or (team.get("name") if isinstance(team, dict) else "Equipo")
 
         manager_name = (
             data.get("manager")
             or (manager.get("managerName") if isinstance(manager, dict) else None)
             or (manager.get("name") if isinstance(manager, dict) else None)
+        )
+
+        # VERIFICADO: la clasificación real NO trae nombre de equipo, solo el del mánager.
+        # `team_name` es NOT NULL en la tabla, así que se recurre al mánager antes que
+        # dejarlo a None (que reventaría el insert) o inventar un nombre genérico.
+        team_name = (
+            data.get("name")
+            or (team.get("name") if isinstance(team, dict) else None)
+            or manager_name
+            or f"Equipo {team_id}"
         )
 
         team_val = data.get("teamValue") or (team.get("teamValue") if isinstance(team, dict) else None)

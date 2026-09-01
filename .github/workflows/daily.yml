@@ -13,6 +13,9 @@ concurrency:
 jobs:
   collect-snapshot:
     runs-on: ubuntu-latest
+    # El job tarda ~8 min (detalle de ~813 jugadores). Con 30 se corta solo si algo
+    # se queda colgado, en vez de consumir los minutos gratuitos del mes.
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -32,10 +35,13 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          B2C_TENANT: ${{ secrets.B2C_TENANT || 'laligadspprob2c' }}
-          B2C_POLICY: ${{ secrets.B2C_POLICY || 'B2C_1A_5ULAIP_PARAMETRIZED_SIGNIN' }}
-          B2C_CLIENT_ID: ${{ secrets.B2C_CLIENT_ID || '6457fa17-1224-416a-b21a-ee6ce76e9bc0' }}
-          B2C_SCOPE: ${{ secrets.B2C_SCOPE || 'openid offline_access' }}
+          # Sin valores de respaldo aquí: si un secret no está definido llega vacío
+          # y config.py aplica el valor verificado por defecto (única fuente de verdad).
+          B2C_TENANT: ${{ secrets.B2C_TENANT }}
+          B2C_TENANT_DOMAIN: ${{ secrets.B2C_TENANT_DOMAIN }}
+          B2C_POLICY: ${{ secrets.B2C_POLICY }}
+          B2C_CLIENT_ID: ${{ secrets.B2C_CLIENT_ID }}
+          B2C_SCOPE: ${{ secrets.B2C_SCOPE }}
           FANTASY_LEAGUE_ID: ${{ secrets.FANTASY_LEAGUE_ID }}
           FANTASY_TOKEN_JSON: ${{ secrets.FANTASY_TOKEN_JSON }}
         run: |

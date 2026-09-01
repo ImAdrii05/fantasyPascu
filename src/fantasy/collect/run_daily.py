@@ -55,7 +55,13 @@ def run_daily() -> int:
     # SUB-JOB 1: Jugadores y mercado global (CIMIENTO PRINCIPAL)
     logger.info("--- [1/2] Recolección Global de Jugadores y Equipos ---")
     try:
-        player_counts = collect_players(api_client=api_client, store=store, snapshot_date=today)
+        player_counts = collect_players(
+            api_client=api_client,
+            store=store,
+            snapshot_date=today,
+            # El detalle (minutos y stats finas) exige un league_id: el endpoint lo pide.
+            league_id=config.FANTASY_LEAGUE_ID or None,
+        )
         summary.update(player_counts)
         players_success = True
         logger.info("✅ Sub-job de jugadores completado correctamente.")

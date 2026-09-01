@@ -17,8 +17,9 @@ def get_token_endpoint() -> str:
         base = tenant.rstrip("/")
         return f"{base}?p={policy}" if "?p=" not in base else base
     elif "." in tenant:
-        # Dominio personalizado (ej. login.laliga.es)
-        return f"https://{tenant}/laligadspprob2c.onmicrosoft.com/oauth2/v2.0/token?p={policy}"
+        # Dominio personalizado (el caso real de LaLiga: login.laliga.es).
+        # El dominio del tenant sale de config para poder parchearlo sin tocar código.
+        return f"https://{tenant}/{config.B2C_TENANT_DOMAIN}/oauth2/v2.0/token?p={policy}"
     else:
         # Tenant estándar B2C
         return f"https://{tenant}.b2clogin.com/{tenant}.onmicrosoft.com/{policy}/oauth2/v2.0/token"

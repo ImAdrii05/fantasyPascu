@@ -17,6 +17,33 @@ def chunk_list(items: list[Any], chunk_size: int = 400):
         yield items[i : i + chunk_size]
 
 
+# PostgREST limita las respuestas a 1000 filas por defecto y NO avisa: devuelve
+# menos datos sin error. Con 813 jugadores diarios, cualquier lectura de histórico
+# supera ese techo al segundo día, así que toda lectura masiva debe paginar.
+PAGE_SIZE = 1000
+
+
+def fetch_all(query_builder, page_size: int = PAGE_SIZE) -> list[dict[str, Any]]:
+    """Ejecuta una consulta paginando hasta agotar los resultados.
+
+    Args:
+        query_builder: Función sin argumentos que devuelve un query de PostgREST
+            ya filtrado y ordenado, listo para aplicarle `.range()`.
+
+    Returns:
+        Todas las filas, no solo las primeras 1000.
+    """
+    rows: list[dict[str, Any]] = []
+    start = 0
+    while True:
+        page = query_builder().range(start, start + page_size - 1).execute()
+        batch = page.data or []
+        rows.extend(batch)
+        if len(batch) < page_size:
+            return rows
+        start += page_size
+
+
 class SupabaseStore:
     """Capa de acceso a datos para Supabase/Postgres."""
 
@@ -97,8 +124,19 @@ class SupabaseStore:
         logger.info(f"Upsert de {count} registros en tabla players.")
         return count
 
-    def upsert_player_daily(self, players: list[Player], snapshot_date: str | date | None = None) -> int:
-        """Guarda la foto diaria de valor de mercado y puntos de cada jugador (Idempotente)."""
+    def upsert_player_daily(
+        self,
+        players: list[Player],
+        snapshot_date: str | date | None = None,
+        minutes_by_player: dict[str, int] | None = None,
+    ) -> int:
+        """Guarda la foto diaria de valor de mercado y puntos de cada jugador (Idempotente).
+
+        Args:
+            minutes_by_player: Minutos totales por jugador agregados desde el detalle.
+                El listado global no trae minutos, así que sin este mapa la columna
+                `minutes_played` queda a NULL (nunca a 0, que falsearía las medias).
+        """
         if not players:
             return 0
         if snapshot_date is None:
@@ -114,7 +152,7 @@ class SupabaseStore:
                 "points": p.points,
                 "average_points": p.average_points,
                 "played_matches": p.played_matches,
-                "minutes_played": p.minutes_played,
+                "minutes_played": (minutes_by_player or {}).get(p.id, p.minutes_played),
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
             }
             for p in players
@@ -141,6 +179,11 @@ class SupabaseStore:
                 "assists": s.assists,
                 "yellow_cards": s.yellow_cards,
                 "red_cards": s.red_cards,
+                "second_yellow_cards": s.second_yellow_cards,
+                "own_goals": s.own_goals,
+                "saves": s.saves,
+                "goals_conceded": s.goals_conceded,
+                "stats": s.stats,
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
             }
             for s in stats

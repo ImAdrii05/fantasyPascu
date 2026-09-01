@@ -186,3 +186,29 @@ def test_refresh_invalid_client_raises_auth_backend_changed():
         get_access_token()
     assert "B2C_CLIENT_ID" in str(exc_info.value)
 
+
+
+def test_token_se_cachea_y_no_relee_el_almacen():
+    """El almacén solo debe leerse una vez: con Supabase, cada lectura es un viaje a la BD."""
+    from fantasy.auth import get_access_token
+    from fantasy.auth.store import BaseTokenStore, set_token_store
+    from fantasy.auth.tokens import TokenSet
+
+    class CountingStore(BaseTokenStore):
+        def __init__(self):
+            self.loads = 0
+
+        def load(self):
+            self.loads += 1
+            return TokenSet(access_token="tok", expires_at=9999999999)
+
+        def save(self, tokens):
+            pass
+
+    store = CountingStore()
+    set_token_store(store)
+
+    for _ in range(50):
+        assert get_access_token() == "tok"
+
+    assert store.loads == 1, f"El almacén se leyó {store.loads} veces; debería ser 1"

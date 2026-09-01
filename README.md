@@ -108,3 +108,59 @@ Fantasy/
 ├─ scripts/                  # Scripts auxiliares de diagnóstico
 └─ tests/                    # Tests unitarios mockeados con responses
 ```
+
+---
+
+## ☁️ Despliegue: cron diario en GitHub Actions
+
+Sin esto, el histórico solo crece cuando ejecutas el job a mano, y **cada día sin
+ejecutar es un día de datos que no se puede recuperar**. La API no da histórico.
+
+### 1. Crear el repositorio
+
+Créalo en GitHub como **privado**. El código no contiene secretos (`.env` y
+`secrets/` están en `.gitignore`), pero no hay razón para publicarlo.
+
+```bash
+git remote add origin https://github.com/TU_USUARIO/TU_REPO.git
+git branch -M main
+git push -u origin main
+```
+
+### 2. Configurar los secrets
+
+En el repo: **Settings → Secrets and variables → Actions → New repository secret**.
+
+Solo hacen falta **tres**:
+
+| Secret | De dónde sale |
+|---|---|
+| `SUPABASE_URL` | Supabase → Project Settings → API |
+| `SUPABASE_SERVICE_KEY` | La clave `service_role` / `sb_secret_...` |
+| `FANTASY_LEAGUE_ID` | El ID de tu liga privada |
+
+Los valores de Azure B2C (`B2C_TENANT`, `B2C_CLIENT_ID`, `B2C_POLICY`, `B2C_SCOPE`)
+**no** hacen falta: están verificados y por defecto en `config.py`. Si LaLiga los
+cambia, se sobreescriben añadiendo el secret correspondiente, sin tocar código.
+
+**El token tampoco es un secret.** Tras la primera ejecución local, el `TokenSet` vive
+en la tabla `auth_state` de Supabase, y de ahí lo lee el job. Es lo que resuelve la
+rotación del `refresh_token`: si se guardara en un secret de GitHub, quedaría obsoleto
+en cuanto Azure B2C lo rotara, y el cron moriría a los pocos días. `FANTASY_TOKEN_JSON`
+existe solo como arranque de emergencia si la tabla estuviera vacía.
+
+### 3. Comprobar que funciona
+
+**Actions → Daily Fantasy Snapshot → Run workflow**. La ejecución tarda unos 7-8
+minutos (el detalle de los ~813 jugadores). Revisa que el log termina en éxito y que
+**no aparece ningún token impreso**.
+
+A partir de ahí corre solo cada día a las 04:00 UTC.
+
+### Mantenimiento
+
+- El `refresh_token` dura **90 días**. Antes de que caduque hay que repetir la captura
+  manual del README y volver a ejecutar el job en local una vez para refrescar
+  `auth_state`. Si no, el cron empezará a fallar con `AuthExpired`.
+- Si LaLiga cambia el backend, lo que se rompe es `auth/` o `api/endpoints.py`.
+  Nada más: `analytics` y `dashboard` solo leen de Postgres.

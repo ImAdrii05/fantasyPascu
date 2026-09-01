@@ -194,3 +194,9 @@ def set_token_store(store: BaseTokenStore) -> None:
     """Permite sobreescribir el almacén de tokens (utilizado principalmente en tests)."""
     global _default_store
     _default_store = store
+
+    # Cambiar de almacén invalida el token en memoria: si no, seguiría sirviéndose el
+    # del almacén anterior. Import local para evitar la dependencia circular con auth/.
+    from fantasy.auth import reset_token_cache
+
+    reset_token_cache()
