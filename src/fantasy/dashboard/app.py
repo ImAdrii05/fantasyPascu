@@ -65,6 +65,18 @@ def load_market_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 
 
 @st.cache_data(ttl=300)
+def load_league_market() -> pd.DataFrame:
+    """Carga los jugadores actualmente listados en el mercado de la liga privada."""
+    client = get_supabase_client()
+    rows = fetch_all(
+        lambda: client.table("league_market")
+        .select("snapshot_date, league_id, market_id, player_id, price, owner_team_id, expires_at")
+        .order("snapshot_date", desc=True)
+    )
+    return _df(rows, ["snapshot_date", "league_id", "market_id", "player_id", "price", "owner_team_id", "expires_at"])
+
+
+@st.cache_data(ttl=300)
 def load_gameweek_stats() -> pd.DataFrame:
     """Carga las estadísticas por jornada (minutos, goles, tarjetas...)."""
     client = get_supabase_client()
@@ -110,6 +122,7 @@ def main():
     try:
         with st.spinner("Cargando datos históricos desde la base de datos..."):
             df_players, df_daily, df_teams = load_market_data()
+            df_league_market = load_league_market()
             df_standings, df_movements = load_league_data()
     except Exception as e:
         st.error(f"❌ Error al conectar con Supabase: {e}")
@@ -134,11 +147,28 @@ def main():
     num_days = len(dates_available)
     latest_date = dates_available[-1]
 
+    # Procesar jugadores en mercado activo de la liga
+    market_player_ids: set[str] = set()
+    market_info_map: dict[str, dict] = {}
+    if not df_league_market.empty:
+        latest_mkt_date = df_league_market["snapshot_date"].max()
+        df_cur_market = df_league_market[df_league_market["snapshot_date"] == latest_mkt_date].copy()
+        for _, r in df_cur_market.iterrows():
+            pid = str(r["player_id"]) if pd.notnull(r.get("player_id")) else ""
+            if pid:
+                market_player_ids.add(pid)
+                market_info_map[pid] = {
+                    "price": r.get("price"),
+                    "expires_at": r.get("expires_at"),
+                    "market_id": r.get("market_id"),
+                }
+
     # Barra lateral de métricas y filtros
     st.sidebar.header("📊 Resumen del Histórico")
     st.sidebar.metric("Snapshots acumulados", f"{num_days} días")
     st.sidebar.metric("Última actualización", str(latest_date))
     st.sidebar.metric("Total jugadores", len(df_players))
+    st.sidebar.metric("En mercado de la liga", f"{len(market_player_ids)} jugadores")
 
     st.sidebar.divider()
     st.sidebar.header("Filtros de Mercado")
@@ -146,6 +176,13 @@ def main():
     # Mapeo de equipos
     teams_dict = dict(zip(df_teams["id"].astype(str), df_teams["name"]))
     df_players["team_name"] = df_players["team_id"].astype(str).map(teams_dict).fillna("Sin equipo")
+
+    # Filtro por mercado actual en sidebar
+    solo_mercado_sidebar = st.sidebar.checkbox(
+        "🎯 Solo mercado actual",
+        value=False,
+        help="Muestra únicamente los jugadores que están a la venta hoy en tu liga privada.",
+    )
 
     # Filtro por posición
     positions = ["Todas"] + sorted([p for p in df_players["position"].dropna().unique() if p])
@@ -174,7 +211,13 @@ def main():
             suffixes=("", "_prev"),
         )
         merged_history["diff_value"] = merged_history["market_value"] - merged_history["market_value_prev"]
-        merged_history["pct_change"] = (merged_history["diff_value"] / merged_history["market_value_prev"]) * 100
+        # Porcentaje de variación relativo al día anterior
+        merged_history["pct_change"] = merged_history.apply(
+            lambda r: (r["diff_value"] / r["market_value_prev"] * 100.0)
+            if pd.notnull(r["market_value_prev"]) and r["market_value_prev"] > 0
+            else None,
+            axis=1,
+        )
         df_market = pd.merge(df_players, merged_history, left_on="id", right_on="player_id", how="inner")
         has_variation = True
     else:
@@ -182,7 +225,14 @@ def main():
         df_market["diff_value"] = None
         df_market["pct_change"] = None
 
-    # Aplicar filtros
+    # Añadir columna indicadora de mercado actual
+    df_market["en_mercado"] = df_market["id"].astype(str).isin(market_player_ids)
+    df_market["estado_mercado"] = df_market["en_mercado"].apply(lambda x: "🟢 EN VENTA" if x else "—")
+    df_market["fin_subasta"] = df_market["id"].astype(str).map(
+        lambda pid: market_info_map.get(pid, {}).get("expires_at") if pid in market_info_map else None
+    )
+
+    # Aplicar filtros globales (posición, equipo, búsqueda)
     if sel_position != "Todas":
         df_market = df_market[df_market["position"] == sel_position]
     if sel_team != "Todos":
@@ -195,47 +245,135 @@ def main():
 
     # Pestañas principales
     tab_market, tab_evolution, tab_minutes, tab_league = st.tabs(
-        ["💰 Mercado Actual", "📈 Evolución de Precio", "⏱️ Minutos y Titularidad", "🏆 Liga Privada"]
+        ["💰 Mercado & Tendencias", "📈 Evolución de Precio", "⏱️ Minutos y Titularidad", "🏆 Liga Privada"]
     )
 
-    # PESTAÑA 1: MERCADO
+    # =========================================================================
+    # PESTAÑA 1: MERCADO Y TENDENCIAS
+    # =========================================================================
     with tab_market:
+        st.subheader("💰 Análisis de Mercado y Variaciones de Precio")
+
+        # Controles superiores: Checkbox de Mercado Actual y Selector de Vista
+        col_chk, col_view = st.columns([1, 2])
+        with col_chk:
+            solo_mercado_tab = st.checkbox(
+                "🎯 **Solo mercado actual** (en venta en mi liga)",
+                value=solo_mercado_sidebar,
+                key="chk_actual_mercado",
+                help="Filtra la tabla para ver únicamente los jugadores que están a la venta hoy en tu liga privada.",
+            )
+
+        filter_active_market = solo_mercado_sidebar or solo_mercado_tab
+
+        # Filtrar si está marcado el checkable
+        df_view = df_market[df_market["en_mercado"]].copy() if filter_active_market else df_market.copy()
+
+        if filter_active_market:
+            st.caption(f"🔍 Mostrando **{len(df_view)}** jugadores a la venta en el mercado de tu liga.")
+
+        # Si tenemos variación, mostrar KPIs de subidas/bajadas
+        if has_variation:
+            df_valid_pct = df_view.dropna(subset=["pct_change"])
+            if not df_valid_pct.empty:
+                top_pct_up = df_valid_pct.sort_values(by="pct_change", ascending=False).iloc[0]
+                top_eur_up = df_valid_pct.sort_values(by="diff_value", ascending=False).iloc[0]
+                top_pct_down = df_valid_pct.sort_values(by="pct_change", ascending=True).iloc[0]
+
+                kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+                kpi1.metric(
+                    "🚀 Mayor Subida (%)",
+                    top_pct_up["name"],
+                    f"{top_pct_up['pct_change']:+.2f} % ({top_pct_up['diff_value']:+,.0f} €)",
+                )
+                kpi2.metric(
+                    "💶 Mayor Subida (€)",
+                    top_eur_up["name"],
+                    f"{top_eur_up['diff_value']:+,.0f} € ({top_eur_up['pct_change']:+.2f} %)",
+                )
+                kpi3.metric(
+                    "🔻 Mayor Caída (%)",
+                    top_pct_down["name"],
+                    f"{top_pct_down['pct_change']:+.2f} % ({top_pct_down['diff_value']:+,.0f} €)",
+                )
+                kpi4.metric(
+                    "🎯 En Mercado Activo",
+                    f"{len(df_view[df_view['en_mercado']])} jugadores",
+                )
+                st.divider()
+
+        with col_view:
+            if has_variation:
+                opciones_orden = [
+                    "🚀 Que más suben en %",
+                    "💶 Que más suben en €",
+                    "🔻 Que más bajan en %",
+                    "💎 Mayor valor de mercado",
+                    "🏆 Más puntos",
+                ]
+                sel_orden = st.radio("Ordenar por:", opciones_orden, horizontal=True)
+            else:
+                opciones_orden = ["💎 Mayor valor de mercado", "🏆 Más puntos", "🔤 Nombre"]
+                sel_orden = st.radio("Ordenar por:", opciones_orden, horizontal=True)
+
         if not has_variation:
             st.info(
                 "💡 **Aún no hay histórico suficiente para calcular variación de precio.** "
-                "Con un único día registrado se muestra el precio actual. La variación diaria comenzará a calcularse "
-                "automáticamente a partir del segundo snapshot."
+                "Con un único día registrado se muestra el precio actual. La variación porcentual (% subida) "
+                "comenzará a calcularse automáticamente a partir del segundo snapshot diario."
             )
 
-        # Formatear columnas
-        display_cols = ["name", "nickname", "team_name", "position", "market_value", "points", "average_points"]
+        # Ordenar DataFrame según la opción seleccionada
         if has_variation:
-            display_cols.extend(["diff_value", "pct_change"])
+            if sel_orden == "🚀 Que más suben en %":
+                df_display = df_view.sort_values(by="pct_change", ascending=False)
+            elif sel_orden == "💶 Que más suben en €":
+                df_display = df_view.sort_values(by="diff_value", ascending=False)
+            elif sel_orden == "🔻 Que más bajan en %":
+                df_display = df_view.sort_values(by="pct_change", ascending=True)
+            elif sel_orden == "💎 Mayor valor de mercado":
+                df_display = df_view.sort_values(by="market_value", ascending=False)
+            elif sel_orden == "🏆 Más puntos":
+                df_display = df_view.sort_values(by="points", ascending=False)
+            else:
+                df_display = df_view.sort_values(by="market_value", ascending=False)
+        else:
+            if sel_orden == "💎 Mayor valor de mercado":
+                df_display = df_view.sort_values(by="market_value", ascending=False)
+            elif sel_orden == "🏆 Más puntos":
+                df_display = df_view.sort_values(by="points", ascending=False)
+            else:
+                df_display = df_view.sort_values(by="name", ascending=True)
 
-        df_display = df_market[display_cols].copy()
-        df_display = df_display.sort_values(by="market_value", ascending=False)
+        # Formatear columnas para visualización
+        display_cols = ["name", "nickname", "team_name", "position", "market_value", "points", "average_points", "estado_mercado"]
+        if has_variation:
+            display_cols = ["name", "nickname", "team_name", "position", "market_value", "pct_change", "diff_value", "points", "average_points", "estado_mercado"]
 
         col_config = {
             "name": st.column_config.TextColumn("Nombre"),
             "nickname": st.column_config.TextColumn("Apodo"),
             "team_name": st.column_config.TextColumn("Equipo"),
             "position": st.column_config.TextColumn("Posición"),
-            "market_value": st.column_config.NumberColumn("Valor Actual (€)", format="%d €"),
+            "market_value": st.column_config.NumberColumn("Valor (€)", format="%d €"),
             "points": st.column_config.NumberColumn("Puntos"),
-            "average_points": st.column_config.NumberColumn("Media Puntos", format="%.2f"),
+            "average_points": st.column_config.NumberColumn("Media", format="%.2f"),
+            "estado_mercado": st.column_config.TextColumn("Mercado Liga"),
         }
         if has_variation:
+            col_config["pct_change"] = st.column_config.NumberColumn("Subida (%)", format="%+.2f %%")
             col_config["diff_value"] = st.column_config.NumberColumn("Variación (€)", format="%+d €")
-            col_config["pct_change"] = st.column_config.NumberColumn("Variación (%)", format="%+.2f %%")
 
         st.dataframe(
-            df_display,
+            df_display[display_cols],
             column_config=col_config,
             use_container_width=True,
             hide_index=True,
         )
 
+    # =========================================================================
     # PESTAÑA 2: EVOLUCIÓN TEMPORAL
+    # =========================================================================
     with tab_evolution:
         st.subheader("Evolución del Valor de Mercado por Jugador")
         # Selector de jugador
@@ -257,6 +395,8 @@ def main():
             with col_info:
                 st.markdown(f"### {p_info['name']}")
                 st.write(f"**Equipo:** {p_info['team_name']} | **Posición:** {p_info.get('position', 'N/A')}")
+                if str(selected_player_id) in market_player_ids:
+                    st.success("🟢 **Este jugador está actualmente a la venta en el mercado de tu liga.**")
                 if not df_p_history.empty:
                     last_val = df_p_history.iloc[-1]["market_value"]
                     st.write(f"**Valor más reciente:** {last_val:,.0f} €" if last_val else "**Valor más reciente:** N/A")
@@ -267,7 +407,9 @@ def main():
             else:
                 st.info("Solo existe un registro diario para este jugador. El gráfico se trazará cuando se acumulen más días.")
 
+    # =========================================================================
     # PESTAÑA 3: MINUTOS Y TITULARIDAD
+    # =========================================================================
     with tab_minutes:
         st.subheader("Minutos recientes como proxy de titularidad")
         st.caption(
@@ -349,7 +491,9 @@ def main():
                 hide_index=True,
             )
 
+    # =========================================================================
     # PESTAÑA 4: LIGA PRIVADA
+    # =========================================================================
     with tab_league:
         st.subheader("Estado de la Liga Privada")
         if df_standings.empty:

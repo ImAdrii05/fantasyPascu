@@ -47,13 +47,17 @@ SALDO_INICIAL_POR_DEFECTO = 115_000_000
 # llegado le inflaría la caja en 15 millones.
 SALDO_INCORPORACION_TARDIA = 100_000_000
 
-# Interpretación de cada activityTypeId, deducida del histórico real.
+# Interpretación de cada activityTypeId, DEDUCIDA DE LA MECÁNICA REAL siguiendo la
+# cadena completa de un jugador, no de correlaciones ni de números que salen redondos.
 #
-# Los signos se determinaron probando las cuatro combinaciones posibles y quedándose con
-# la única que no obliga a un saldo inicial absurdo (las otras exigían entre 125 y 374
-# millones; esta, 115 exactos).
-COMPRA_MERCADO = 33      # sale dinero: el mánager adquiere un jugador
-VENTA_MERCADO = 31       # entra dinero: el mánager se deshace de un jugador
+# Ejemplo que lo fija (jugador 2354):
+#   17 ago  tipo 31  u1=6211313                55.000.000  -> compra en el mercado
+#   31 ago  tipo  1  u1=9867326 u2=6211313     59.360.561  -> u1 paga la cláusula a u2
+#    1 sep  tipo 33  u1=9867326                51.152.468  -> vende al mercado
+#
+# Los eventos tipo 31 caen siempre a las 10:12, la hora de resolución del mercado.
+COMPRA_MERCADO = 31      # sale dinero: el mánager adquiere un jugador
+VENTA_MERCADO = 33       # entra dinero: el mánager se deshace de un jugador
 PREMIO_JORNADA = 6       # entra dinero: premio semanal por puntos (trae weekNumber)
 TRASPASO = (1, 2)        # entre dos mánagers: user1 paga, user2 cobra
 

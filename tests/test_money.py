@@ -31,11 +31,16 @@ class Mov:
 
 
 def test_venta_al_mercado_suma_y_compra_resta():
-    venta = Mov("1", 31, "2026-08-13T10:00", amount=1000, user1_id="A")
-    compra = Mov("2", 33, "2026-08-13T11:00", amount=400, user1_id="A")
+    """Signos fijados por la cadena real del jugador 2354: 31 = compra, 33 = venta.
 
-    assert clasificar(venta) == [("A", 1000, "Venta al mercado", "venta_mercado")]
-    assert clasificar(compra)[0][1] == -400
+    Se codificaron al reves en la primera version y los numeros salian absurdos
+    (un manager con 345 M en caja tras tres semanas).
+    """
+    compra = Mov("1", 31, "2026-08-13T10:12", amount=1000, user1_id="A")
+    venta = Mov("2", 33, "2026-08-13T11:00", amount=400, user1_id="A")
+
+    assert clasificar(compra) == [("A", -1000, "Compra en el mercado", "compra_mercado")]
+    assert clasificar(venta)[0][1] == 400
 
 
 def test_traspaso_genera_dos_apuntes_opuestos():
@@ -66,8 +71,8 @@ def test_eventos_sin_importe_no_generan_apuntes():
 
 def test_caja_estimada_es_saldo_inicial_mas_flujo():
     movs = [
-        Mov("1", 31, "2026-08-13T10:00", amount=10_000_000, user1_id="A"),
-        Mov("2", 33, "2026-08-14T10:00", amount=3_000_000, user1_id="A"),
+        Mov("1", 33, "2026-08-13T10:00", amount=10_000_000, user1_id="A"),  # vende
+        Mov("2", 31, "2026-08-14T10:12", amount=3_000_000, user1_id="A"),   # compra
     ]
     bal = construir_balances(movs)["A"]
 
@@ -79,15 +84,15 @@ def test_caja_estimada_es_saldo_inicial_mas_flujo():
 def test_las_diferencias_entre_managers_no_dependen_del_saldo_inicial():
     """Lo exacto del sistema: cambiar S desplaza todas las cajas por igual."""
     movs = [
-        Mov("1", 31, "2026-08-13T10:00", amount=8_000_000, user1_id="A"),
-        Mov("2", 33, "2026-08-13T11:00", amount=5_000_000, user1_id="B"),
+        Mov("1", 33, "2026-08-13T10:00", amount=8_000_000, user1_id="A"),   # A vende
+        Mov("2", 31, "2026-08-13T11:00", amount=5_000_000, user1_id="B"),   # B compra
     ]
     bajo = construir_balances(movs, saldo_inicial=50_000_000)
     alto = construir_balances(movs, saldo_inicial=900_000_000)
 
     dif_bajo = bajo["A"].caja_estimada - bajo["B"].caja_estimada
     dif_alto = alto["A"].caja_estimada - alto["B"].caja_estimada
-    assert dif_bajo == dif_alto == 13_000_000
+    assert dif_bajo == dif_alto == 13_000_000  # +8 de A frente a -5 de B
 
 
 def test_manager_sin_movimientos_se_trata_como_incorporacion_tardia():
@@ -104,9 +109,9 @@ def test_manager_sin_movimientos_se_trata_como_incorporacion_tardia():
 def test_saldo_inicial_minimo_cubre_el_peor_descubierto():
     """S debe bastar para que nadie quede en negativo en ningún momento."""
     movs = [
-        Mov("1", 33, "2026-08-13T10:00", amount=30_000_000, user1_id="A"),
-        Mov("2", 33, "2026-08-14T10:00", amount=20_000_000, user1_id="A"),
-        Mov("3", 31, "2026-08-15T10:00", amount=45_000_000, user1_id="A"),
+        Mov("1", 31, "2026-08-13T10:12", amount=30_000_000, user1_id="A"),  # compra
+        Mov("2", 31, "2026-08-14T10:12", amount=20_000_000, user1_id="A"),  # compra
+        Mov("3", 33, "2026-08-15T10:00", amount=45_000_000, user1_id="A"),  # vende
     ]
     # Gasta 50 antes de recuperar 45: en el peor momento debe 50.
     assert saldo_inicial_minimo(movs) == 50_000_000
@@ -115,7 +120,7 @@ def test_saldo_inicial_minimo_cubre_el_peor_descubierto():
 def test_detecta_tipos_con_dinero_no_contemplados():
     """La alarma: un tipo nuevo con importe desviaría todos los saldos en silencio."""
     movs = [
-        Mov("1", 31, "2026-08-13T10:00", amount=1_000, user1_id="A"),
+        Mov("1", 31, "2026-08-13T10:12", amount=1_000, user1_id="A"),
         Mov("2", 77, "2026-08-14T10:00", amount=9_999, user1_id="A"),
         Mov("3", 9, "2026-08-14T10:00", user1_id="A"),
     ]
