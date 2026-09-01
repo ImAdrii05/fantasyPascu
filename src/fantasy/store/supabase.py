@@ -215,6 +215,7 @@ class SupabaseStore:
                 "team_value": s.team_value,
                 "points": s.points,
                 "position": s.position,
+                "manager_id": s.manager_id,
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
             }
             for s in standings
@@ -272,6 +273,9 @@ class SupabaseStore:
                 "amount": m.amount,
                 "movement_type": str(m.movement_type) if m.movement_type is not None else None,
                 "movement_date": m.movement_date,
+                "user1_id": m.user1_id,
+                "user2_id": m.user2_id,
+                "week_number": m.week_number,
                 "raw_payload": m.raw_payload,
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
             }

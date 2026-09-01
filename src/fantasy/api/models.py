@@ -252,6 +252,9 @@ class LeagueStanding:
     team_value: int | None = None
     points: int | None = None
     position: int | None = None
+    # managerId: la clave que permite cruzar esta tabla con la actividad de la liga,
+    # que identifica a las personas por manager y no por equipo.
+    manager_id: str | None = None
 
     @classmethod
     def from_api(cls, league_id: str, data: dict[str, Any], position: int | None = None) -> "LeagueStanding":
@@ -265,6 +268,13 @@ class LeagueStanding:
             or (manager.get("managerName") if isinstance(manager, dict) else None)
             or (manager.get("name") if isinstance(manager, dict) else None)
         )
+
+        # VERIFICADO: la actividad de la liga referencia a las personas por managerId,
+        # así que sin este campo no hay forma de saber de quién es cada movimiento.
+        manager_id = None
+        if isinstance(team, dict):
+            manager_id = team.get("managerId") or (manager.get("id") if isinstance(manager, dict) else None)
+        manager_id = str(manager_id) if manager_id else None
 
         # VERIFICADO: la clasificación real NO trae nombre de equipo, solo el del mánager.
         # `team_name` es NOT NULL en la tabla, así que se recurre al mánager antes que
@@ -305,6 +315,7 @@ class LeagueStanding:
             team_value=team_val,
             points=pts,
             position=pos,
+            manager_id=manager_id,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -323,6 +334,13 @@ class LeagueMovement:
     amount: int | None = None
     movement_type: int | str | None = None
     movement_date: str | None = None
+    # Identificadores de MANAGER (no de equipo). La actividad de la liga usa
+    # managerId, que es la clave para reconstruir el dinero de cada persona.
+    # En un traspaso entre mánagers aparecen los dos; contra el mercado, solo user1.
+    user1_id: str | None = None
+    user2_id: str | None = None
+    # Solo en los ingresos por jornada (activityTypeId 6).
+    week_number: int | None = None
     raw_payload: dict[str, Any] | None = None
 
     @classmethod
@@ -337,8 +355,10 @@ class LeagueMovement:
                 player_id = str(player_data["id"])
             player_name = player_data.get("nickname") or player_data.get("name")
 
-        if not player_id and data.get("playerId"):
-            player_id = str(data["playerId"])
+        # VERIFICADO: la actividad real referencia al jugador como `playerMasterId`,
+        # un entero suelto, no un objeto anidado.
+        if not player_id and (data.get("playerMasterId") or data.get("playerId")):
+            player_id = str(data.get("playerMasterId") or data.get("playerId"))
         if not player_name and data.get("playerName"):
             player_name = str(data["playerName"])
 
@@ -353,7 +373,20 @@ class LeagueMovement:
                 amount = None
 
         m_type = data.get("activityTypeId") or data.get("type") or data.get("action")
-        m_date = data.get("created") or data.get("date") or data.get("timestamp")
+        # VERIFICADO: el campo real es `createdAt` (ISO con zona horaria). Antes se
+        # buscaba `created`/`date`/`timestamp` y los 108 movimientos quedaban sin fecha,
+        # lo que hace imposible ordenar el libro mayor.
+        m_date = data.get("createdAt") or data.get("created") or data.get("date") or data.get("timestamp")
+
+        user1_id = str(data["user1Id"]) if data.get("user1Id") else None
+        user2_id = str(data["user2Id"]) if data.get("user2Id") else None
+
+        week_number = data.get("weekNumber")
+        if week_number is not None:
+            try:
+                week_number = int(week_number)
+            except (ValueError, TypeError):
+                week_number = None
 
         return cls(
             movement_id=mov_id,
@@ -365,6 +398,9 @@ class LeagueMovement:
             amount=amount,
             movement_type=m_type,
             movement_date=str(m_date) if m_date else None,
+            user1_id=user1_id,
+            user2_id=user2_id,
+            week_number=week_number,
             raw_payload=data,
         )
 

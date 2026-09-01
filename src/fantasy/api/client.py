@@ -178,9 +178,43 @@ class FantasyApiClient:
         return standings, raw
 
     def get_league_activity(self, league_id: str | int, index: int = 0) -> tuple[list[LeagueMovement], Any]:
-        """Obtiene el historial de movimientos de la liga privada. Devuelve (lista_movimientos, raw_json)."""
+        """Obtiene UNA página del historial de actividad. Devuelve (movimientos, raw_json)."""
         url = endpoints.league_activity_url(league_id, index=index)
         raw = self.get(url)
         items = raw if isinstance(raw, list) else (raw.get("elements") or (raw.get("data") or {}).get("elements") or (raw.get("data") if isinstance(raw.get("data"), list) else []))
         movements = [LeagueMovement.from_api(str(league_id), item) for item in items if isinstance(item, dict)]
         return movements, raw
+
+    def get_league_activity_all(
+        self, league_id: str | int, max_pages: int = 50
+    ) -> tuple[list[LeagueMovement], list[Any]]:
+        """Recorre TODAS las páginas de actividad hasta agotar el histórico.
+
+        El endpoint pagina por `index` y devuelve una lista vacía cuando ya no queda
+        nada. Pedir solo `index=0` deja fuera el histórico antiguo, y sin el histórico
+        completo es imposible reconstruir el dinero de cada mánager: falta justo el
+        principio, que es donde arranca el saldo.
+
+        `max_pages` es un tope de seguridad para no entrar en bucle infinito si el
+        backend dejara de devolver páginas vacías al terminar.
+
+        Returns:
+            (movimientos de todas las páginas, lista de payloads crudos por página).
+        """
+        todos: list[LeagueMovement] = []
+        crudos: list[Any] = []
+
+        for index in range(max_pages):
+            movimientos, raw = self.get_league_activity(league_id, index=index)
+            if not movimientos:
+                break
+            todos.extend(movimientos)
+            crudos.append(raw)
+        else:
+            logger.warning(
+                f"Se alcanzó el tope de {max_pages} páginas de actividad sin encontrar el final. "
+                "El histórico podría estar incompleto."
+            )
+
+        logger.info(f"Actividad de la liga: {len(todos)} movimientos en {len(crudos)} páginas.")
+        return todos, crudos

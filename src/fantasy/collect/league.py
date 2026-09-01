@@ -54,8 +54,10 @@ def collect_league(
 
     # 3. Actividad y movimientos recientes de la liga
     logger.info(f"Descargando histórico de actividad de la liga privada {str_league_id}...")
-    movements, raw_activity = api_client.get_league_activity(str_league_id, index=0)
-    persist_raw(f"league_{str_league_id}_activity", raw_activity, store=store)
+    # Todas las páginas: pedir solo index=0 dejaba fuera la mitad del histórico, y sin
+    # el principio no se puede reconstruir el dinero de nadie.
+    movements, raw_pages = api_client.get_league_activity_all(str_league_id)
+    persist_raw(f"league_{str_league_id}_activity", raw_pages, store=store)
     counts["league_movements"] = store.upsert_league_movements(movements)
 
     logger.info(
