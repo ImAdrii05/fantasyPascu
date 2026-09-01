@@ -6,6 +6,7 @@ gráficos interactivos con Plotly y seguimiento en tiempo real del mercado.
 """
 
 from datetime import date, datetime
+import textwrap
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -22,6 +23,10 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+def render_html(html_str: str) -> None:
+    """Renderiza HTML nativo sin que Markdown lo confunda con bloques de código indentados."""
+    st.html(textwrap.dedent(html_str).strip())
 
 # =============================================================================
 # ESTILOS CSS PERSONALIZADOS (THEME FANTASY DARK & NEON)
@@ -158,7 +163,7 @@ h1, h2, h3, h4, .fantasy-font {
     background: linear-gradient(145deg, rgba(30, 41, 59, 0.9) 0%, rgba(15, 23, 42, 0.9) 100%);
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 16px;
-    padding: 16px;
+    padding: 18px;
     box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
     position: relative;
     overflow: hidden;
@@ -387,8 +392,6 @@ def load_league_data(df_players: pd.DataFrame | None = None) -> tuple[pd.DataFra
             m_type_int = 0
 
         desc = type_descriptions.get(m_type_int, f"Tipo {m_type}")
-
-        # Formatear fecha legible
         date_str = str(m_date).replace("T", " ")[:16] if m_date else "—"
 
         mov_rows.append({
@@ -468,7 +471,7 @@ def format_money(val: int | float | None, with_sign: bool = False) -> str:
 
 def main():
     # Inyectar estilos personalizados
-    st.markdown(FANTASY_CSS, unsafe_allow_html=True)
+    render_html(FANTASY_CSS)
 
     # Validar que Supabase esté configurado
     if not config.SUPABASE_URL or not config.SUPABASE_SERVICE_KEY:
@@ -523,19 +526,18 @@ def main():
                 }
 
     # Header Hero Banner
-    st.markdown(
+    render_html(
         f"""
         <div class="fantasy-hero">
             <div class="hero-title">
                 <span>⚽ LALIGA FANTASY</span>
-                <span style="font-size: 0.9rem; background: #e11d48; color: white; padding: 4px 12px; border-radius: 9999px; letter-spacing: 0.05em; vertical-align: middle;">PRO ANALYTICS</span>
+                <span style="font-size: 0.8rem; font-weight: 800; background: #e11d48; color: #ffffff; padding: 4px 12px; border-radius: 9999px; letter-spacing: 0.05em; display: inline-block;">PRO ANALYTICS</span>
             </div>
             <div class="hero-subtitle">
                 Seguimiento de mercado en vivo · Snapshots diarios · Estimación de caja y probabilidad de alineación
             </div>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
     # Barra lateral de métricas y filtros
@@ -689,87 +691,87 @@ def main():
                 top_eur_up = df_valid_pct.sort_values(by="diff_value", ascending=False).iloc[0]
                 top_pct_down = df_valid_pct.sort_values(by="pct_change", ascending=True).iloc[0]
 
-                kpi_c1.markdown(
-                    f"""
-                    <div class="stat-card">
-                        <div class="stat-card-title">🚀 Mayor Subida (%)</div>
-                        <div class="stat-card-value" style="color: #34d399;">{top_pct_up['name']}</div>
-                        <div class="stat-card-delta pill-up">+{top_pct_up['pct_change']:.2f} % ({format_money(top_pct_up['diff_value'], with_sign=True)})</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                kpi_c2.markdown(
-                    f"""
-                    <div class="stat-card">
-                        <div class="stat-card-title">💶 Mayor Subida (€)</div>
-                        <div class="stat-card-value" style="color: #60a5fa;">{top_eur_up['name']}</div>
-                        <div class="stat-card-delta pill-up">{format_money(top_eur_up['diff_value'], with_sign=True)} (+{top_eur_up['pct_change']:.2f} %)</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                kpi_c3.markdown(
-                    f"""
-                    <div class="stat-card">
-                        <div class="stat-card-title">🔻 Mayor Caída (%)</div>
-                        <div class="stat-card-value" style="color: #f87171;">{top_pct_down['name']}</div>
-                        <div class="stat-card-delta pill-down">{top_pct_down['pct_change']:.2f} % ({format_money(top_pct_down['diff_value'], with_sign=True)})</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                kpi_c4.markdown(
+                with kpi_c1:
+                    render_html(
+                        f"""
+                        <div class="stat-card">
+                            <div class="stat-card-title">🚀 Mayor Subida (%)</div>
+                            <div class="stat-card-value" style="color: #34d399;">{top_pct_up['name']}</div>
+                            <div class="stat-card-delta pill-up">+{top_pct_up['pct_change']:.2f} % ({format_money(top_pct_up['diff_value'], with_sign=True)})</div>
+                        </div>
+                        """
+                    )
+                with kpi_c2:
+                    render_html(
+                        f"""
+                        <div class="stat-card">
+                            <div class="stat-card-title">💶 Mayor Subida (€)</div>
+                            <div class="stat-card-value" style="color: #60a5fa;">{top_eur_up['name']}</div>
+                            <div class="stat-card-delta pill-up">{format_money(top_eur_up['diff_value'], with_sign=True)} (+{top_eur_up['pct_change']:.2f} %)</div>
+                        </div>
+                        """
+                    )
+                with kpi_c3:
+                    render_html(
+                        f"""
+                        <div class="stat-card">
+                            <div class="stat-card-title">🔻 Mayor Caída (%)</div>
+                            <div class="stat-card-value" style="color: #f87171;">{top_pct_down['name']}</div>
+                            <div class="stat-card-delta pill-down">{top_pct_down['pct_change']:.2f} % ({format_money(top_pct_down['diff_value'], with_sign=True)})</div>
+                        </div>
+                        """
+                    )
+                with kpi_c4:
+                    render_html(
+                        f"""
+                        <div class="stat-card">
+                            <div class="stat-card-title">🎯 En Mercado Activo</div>
+                            <div class="stat-card-value" style="color: #facc15;">{total_mkt_active} <span style="font-size: 0.9rem; font-weight: 500; color: #94a3b8;">jugadores</span></div>
+                            <div class="stat-card-delta" style="color: #94a3b8;">Disponibles para puja</div>
+                        </div>
+                        """
+                    )
+        else:
+            with kpi_c1:
+                render_html(
                     f"""
                     <div class="stat-card">
                         <div class="stat-card-title">🎯 En Mercado Activo</div>
-                        <div class="stat-card-value" style="color: #facc15;">{total_mkt_active} <span style="font-size: 0.9rem; font-weight: 500; color: #94a3b8;">jugadores</span></div>
-                        <div class="stat-card-delta" style="color: #94a3b8;">Disponibles para puja</div>
+                        <div class="stat-card-value" style="color: #34d399;">{len(market_player_ids)} <span style="font-size: 0.9rem; font-weight: 500; color: #94a3b8;">jugadores</span></div>
+                        <div class="stat-card-delta" style="color: #94a3b8;">A la venta en tu liga</div>
                     </div>
-                    """,
-                    unsafe_allow_html=True,
+                    """
                 )
-        else:
-            kpi_c1.markdown(
-                f"""
-                <div class="stat-card">
-                    <div class="stat-card-title">🎯 En Mercado Activo</div>
-                    <div class="stat-card-value" style="color: #34d399;">{len(market_player_ids)} <span style="font-size: 0.9rem; font-weight: 500; color: #94a3b8;">jugadores</span></div>
-                    <div class="stat-card-delta" style="color: #94a3b8;">A la venta en tu liga</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            kpi_c2.markdown(
-                f"""
-                <div class="stat-card">
-                    <div class="stat-card-title">👥 Total Jugadores</div>
-                    <div class="stat-card-value" style="color: #60a5fa;">{len(df_players)}</div>
-                    <div class="stat-card-delta" style="color: #94a3b8;">En la base de datos</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            kpi_c3.markdown(
-                f"""
-                <div class="stat-card">
-                    <div class="stat-card-title">🛡️ Equipos</div>
-                    <div class="stat-card-value" style="color: #facc15;">{len(df_teams)}</div>
-                    <div class="stat-card-delta" style="color: #94a3b8;">Primera división</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            kpi_c4.markdown(
-                f"""
-                <div class="stat-card">
-                    <div class="stat-card-title">📅 Snapshots</div>
-                    <div class="stat-card-value" style="color: #c084fc;">{num_days} <span style="font-size: 0.9rem; font-weight: 500; color: #94a3b8;">día</span></div>
-                    <div class="stat-card-delta" style="color: #94a3b8;">Día 1 registrado</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            with kpi_c2:
+                render_html(
+                    f"""
+                    <div class="stat-card">
+                        <div class="stat-card-title">👥 Total Jugadores</div>
+                        <div class="stat-card-value" style="color: #60a5fa;">{len(df_players)}</div>
+                        <div class="stat-card-delta" style="color: #94a3b8;">En la base de datos</div>
+                    </div>
+                    """
+                )
+            with kpi_c3:
+                render_html(
+                    f"""
+                    <div class="stat-card">
+                        <div class="stat-card-title">🛡️ Equipos</div>
+                        <div class="stat-card-value" style="color: #facc15;">{len(df_teams)}</div>
+                        <div class="stat-card-delta" style="color: #94a3b8;">Primera división</div>
+                    </div>
+                    """
+                )
+            with kpi_c4:
+                render_html(
+                    f"""
+                    <div class="stat-card">
+                        <div class="stat-card-title">📅 Snapshots</div>
+                        <div class="stat-card-value" style="color: #c084fc;">{num_days} <span style="font-size: 0.9rem; font-weight: 500; color: #94a3b8;">día</span></div>
+                        <div class="stat-card-delta" style="color: #94a3b8;">Día 1 registrado</div>
+                    </div>
+                    """
+                )
 
         st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
 
@@ -783,7 +785,7 @@ def main():
                     img_url = row.get("image_url") or NO_PLAYER_IMG
                     pos_cls = get_position_class(row.get("position"))
                     pct_str = f"+{row['pct_change']:.2f}%" if pd.notnull(row.get("pct_change")) and row["pct_change"] > 0 else (f"{row['pct_change']:.2f}%" if pd.notnull(row.get("pct_change")) else "Activo")
-                    st.markdown(
+                    render_html(
                         f"""
                         <div class="player-highlight-card">
                             <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -798,8 +800,7 @@ def main():
                                 <div style="margin-top: 6px;"><span class="pill-up">{pct_str}</span></div>
                             </div>
                         </div>
-                        """,
-                        unsafe_allow_html=True,
+                        """
                     )
             st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
 
@@ -897,7 +898,7 @@ def main():
                 mkt_badge_html = '<span class="badge-market-active" style="margin-left: 8px;">🟢 EN VENTA EN TU LIGA</span>' if is_on_sale else ""
                 last_val = df_p_history.iloc[-1]["market_value"] if not df_p_history.empty else 0
 
-                st.markdown(
+                render_html(
                     f"""
                     <div class="player-highlight-card">
                         <div style="display: flex; align-items: center; gap: 16px;">
@@ -923,8 +924,7 @@ def main():
                             </div>
                         </div>
                     </div>
-                    """,
-                    unsafe_allow_html=True,
+                    """
                 )
 
             with col_pchart:
@@ -1059,7 +1059,7 @@ def main():
                 c_p2, c_p1, c_p3 = st.columns([1, 1.2, 1])
 
                 with c_p1:
-                    st.markdown(
+                    render_html(
                         f"""
                         <div class="podium-card podium-1">
                             <div style="font-size: 2rem;">🥇</div>
@@ -1068,11 +1068,10 @@ def main():
                             <div style="font-size: 1.5rem; font-weight: 800; color: white; margin-top: 8px;">{top3[0].get('points', 0)} pts</div>
                             <div style="color: #94a3b8; font-size: 0.85rem;">Plantilla: {format_money(top3[0].get('team_value'))}</div>
                         </div>
-                        """,
-                        unsafe_allow_html=True,
+                        """
                     )
                 with c_p2:
-                    st.markdown(
+                    render_html(
                         f"""
                         <div class="podium-card podium-2" style="margin-top: 24px;">
                             <div style="font-size: 1.7rem;">🥈</div>
@@ -1081,11 +1080,10 @@ def main():
                             <div style="font-size: 1.3rem; font-weight: 800; color: white; margin-top: 6px;">{top3[1].get('points', 0)} pts</div>
                             <div style="color: #94a3b8; font-size: 0.8rem;">Plantilla: {format_money(top3[1].get('team_value'))}</div>
                         </div>
-                        """,
-                        unsafe_allow_html=True,
+                        """
                     )
                 with c_p3:
-                    st.markdown(
+                    render_html(
                         f"""
                         <div class="podium-card podium-3" style="margin-top: 36px;">
                             <div style="font-size: 1.5rem;">🥉</div>
@@ -1094,8 +1092,7 @@ def main():
                             <div style="font-size: 1.2rem; font-weight: 800; color: white; margin-top: 6px;">{top3[2].get('points', 0)} pts</div>
                             <div style="color: #94a3b8; font-size: 0.8rem;">Plantilla: {format_money(top3[2].get('team_value'))}</div>
                         </div>
-                        """,
-                        unsafe_allow_html=True,
+                        """
                     )
 
             st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
