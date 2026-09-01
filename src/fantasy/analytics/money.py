@@ -34,6 +34,7 @@ de actividad nuevos con dinero que este módulo no sepa interpretar.
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Iterable
+import pandas as pd
 
 # Saldo inicial de cada fundador. NO es un dato leído de la API: es el mínimo que hace
 # que ningún mánager quede en números rojos, calculado sobre el histórico real. Se deja
@@ -232,3 +233,113 @@ def saldo_inicial_minimo(movimientos: Iterable[Any]) -> int:
     if not balances:
         return 0
     return -min(b.peor_descubierto for b in balances.values())
+
+
+def calculate_estimated_cash(
+    df_standings: pd.DataFrame,
+    df_movements: pd.DataFrame,
+    saldo_inicial: int = SALDO_INICIAL_POR_DEFECTO,
+) -> pd.DataFrame:
+    """Calcula la caja estimada para cada mánager a partir de DataFrames.
+
+    Args:
+        df_standings: DataFrame con columnas de clasificación (incluyendo 'league_team_id' y opcionalmente 'manager_id').
+        df_movements: DataFrame con los movimientos de mercado.
+        saldo_inicial: Saldo inicial a aplicar a los fundadores.
+
+    Returns:
+        DataFrame con columnas:
+        ['team_id', 'manager_id', 'cash_estimate', 'net_transfer_flow', 'prize_flow', 'movements_count', 'is_late_join']
+    """
+    if df_movements is None or df_movements.empty:
+        if df_standings is None or df_standings.empty:
+            return pd.DataFrame(
+                columns=["team_id", "manager_id", "cash_estimate", "net_transfer_flow", "prize_flow", "movements_count", "is_late_join"]
+            )
+        rows = []
+        for _, s in df_standings.iterrows():
+            tid = str(s.get("league_team_id") or "")
+            mid = str(s.get("manager_id") or tid)
+            rows.append({
+                "team_id": tid,
+                "manager_id": mid,
+                "cash_estimate": saldo_inicial,
+                "net_transfer_flow": 0,
+                "prize_flow": 0,
+                "movements_count": 0,
+                "is_late_join": False,
+            })
+        return pd.DataFrame(rows)
+
+    class SimpleMov:
+        def __init__(self, row):
+            self.movement_id = str(row.get("movement_id") or "")
+            self.movement_type = row.get("movement_type")
+            self.movement_date = str(row.get("movement_date") or "")
+            self.amount = int(row.get("amount")) if pd.notnull(row.get("amount")) else None
+            self.user1_id = str(row.get("user1_id")) if pd.notnull(row.get("user1_id")) else None
+            self.user2_id = str(row.get("user2_id")) if pd.notnull(row.get("user2_id")) else None
+            self.player_id = str(row.get("player_id")) if pd.notnull(row.get("player_id")) else None
+            self.week_number = row.get("week_number")
+
+    mov_objs = [SimpleMov(r) for _, r in df_movements.iterrows()]
+
+    mgr_to_team: dict[str, str] = {}
+    known_managers: list[str] = []
+    if df_standings is not None and not df_standings.empty:
+        for _, s in df_standings.iterrows():
+            tid = str(s.get("league_team_id") or "")
+            mid = str(s.get("manager_id") or "")
+            if mid:
+                mgr_to_team[mid] = tid
+                known_managers.append(mid)
+            if tid:
+                mgr_to_team[tid] = tid
+                known_managers.append(tid)
+
+    balances = construir_balances(
+        mov_objs,
+        saldo_inicial=saldo_inicial,
+        managers_conocidos=known_managers if known_managers else None,
+    )
+
+    rows = []
+    for mgr_id, bal in balances.items():
+        net_transfer = sum(
+            a.amount for a in bal.apuntes if a.signo_origen in ("compra_mercado", "venta_mercado", "traspaso_salida", "traspaso_entrada")
+        )
+        prizes = sum(a.amount for a in bal.apuntes if a.signo_origen == "premio_jornada")
+        tid = mgr_to_team.get(mgr_id, mgr_id)
+
+        rows.append({
+            "team_id": tid,
+            "manager_id": mgr_id,
+            "cash_estimate": bal.caja_estimada,
+            "net_transfer_flow": net_transfer,
+            "prize_flow": prizes,
+            "movements_count": bal.num_movimientos,
+            "is_late_join": bal.incorporacion_tardia,
+        })
+
+    return pd.DataFrame(rows)
+
+
+def suggest_initial_balance(df_movements: pd.DataFrame) -> int:
+    """Calcula el saldo inicial mínimo sugerido a partir de un DataFrame de movimientos."""
+    if df_movements is None or df_movements.empty:
+        return SALDO_INICIAL_POR_DEFECTO
+
+    class SimpleMov:
+        def __init__(self, row):
+            self.movement_id = str(row.get("movement_id") or "")
+            self.movement_type = row.get("movement_type")
+            self.movement_date = str(row.get("movement_date") or "")
+            self.amount = int(row.get("amount")) if pd.notnull(row.get("amount")) else None
+            self.user1_id = str(row.get("user1_id")) if pd.notnull(row.get("user1_id")) else None
+            self.user2_id = str(row.get("user2_id")) if pd.notnull(row.get("user2_id")) else None
+            self.player_id = str(row.get("player_id")) if pd.notnull(row.get("player_id")) else None
+            self.week_number = row.get("week_number")
+
+    mov_objs = [SimpleMov(r) for _, r in df_movements.iterrows()]
+    min_saldo = saldo_inicial_minimo(mov_objs)
+    return max(min_saldo, SALDO_INICIAL_POR_DEFECTO)
