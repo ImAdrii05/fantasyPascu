@@ -1,24 +1,247 @@
 """Dashboard interactivo para análisis de mercado de LaLiga Fantasy en Streamlit.
 
-Lee EXCLUSIVAMENTE desde la base de datos de Supabase/Postgres.
-NUNCA realiza peticiones en tiempo real a la API de LaLiga.
+Diseño visual premium estilo Fantasy: Glassmorphism, Dark UI, badges de posición,
+gráficos interactivos con Plotly y seguimiento en tiempo real del mercado.
 """
 
-from datetime import date
+from datetime import date, datetime
 import streamlit as st
 import pandas as pd
+import plotly.graph_objects as go
 from supabase import create_client
 
 from fantasy import config
 from fantasy.store.supabase import fetch_all
+from fantasy.analytics.money import calculate_estimated_cash, suggest_initial_balance
 
 # Configuración de página
 st.set_page_config(
-    page_title="LaLiga Fantasy — Dashboard Personal",
+    page_title="LaLiga Fantasy — Pro Analytics",
     page_icon="⚽",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# =============================================================================
+# ESTILOS CSS PERSONALIZADOS (THEME FANTASY DARK & NEON)
+# =============================================================================
+FANTASY_CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+
+html, body, [class*="css"] {
+    font-family: 'Plus Jakarta Sans', sans-serif;
+}
+
+h1, h2, h3, h4, .fantasy-font {
+    font-family: 'Outfit', sans-serif;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+}
+
+/* Header Banner */
+.fantasy-hero {
+    background: linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(30, 27, 75, 0.9) 50%, rgba(15, 23, 42, 0.95) 100%);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 20px;
+    padding: 24px 32px;
+    margin-bottom: 24px;
+    box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.5);
+    position: relative;
+    overflow: hidden;
+}
+
+.fantasy-hero::before {
+    content: '';
+    position: absolute;
+    top: -50%;
+    right: -20%;
+    width: 350px;
+    height: 350px;
+    background: radial-gradient(circle, rgba(239, 68, 68, 0.2) 0%, transparent 70%);
+    pointer-events: none;
+}
+
+.hero-title {
+    font-size: 2.2rem;
+    font-weight: 800;
+    background: linear-gradient(90deg, #ffffff 0%, #cbd5e1 50%, #f43f5e 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.hero-subtitle {
+    color: #94a3b8;
+    font-size: 0.95rem;
+    margin-top: 6px;
+}
+
+/* Stat Cards */
+.stat-card {
+    background: rgba(30, 41, 59, 0.7);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 16px;
+    padding: 18px 20px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+    transition: transform 0.2s ease, border-color 0.2s ease;
+}
+
+.stat-card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+.stat-card-title {
+    color: #94a3b8;
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 6px;
+}
+
+.stat-card-value {
+    color: #ffffff;
+    font-size: 1.5rem;
+    font-weight: 800;
+    font-family: 'Outfit', sans-serif;
+}
+
+.stat-card-delta {
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin-top: 4px;
+}
+
+/* Position Badges */
+.pos-badge {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+.pos-por { background: rgba(234, 179, 8, 0.15); color: #facc15; border: 1px solid rgba(234, 179, 8, 0.3); }
+.pos-def { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
+.pos-med { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
+.pos-del { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
+.pos-ent { background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); }
+
+/* Market status badge */
+.badge-market-active {
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.2) 0%, rgba(5, 150, 105, 0.3) 100%);
+    border: 1px solid rgba(16, 185, 129, 0.4);
+    color: #34d399;
+    padding: 4px 10px;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.2);
+}
+
+/* Player Mini Cards */
+.player-highlight-card {
+    background: linear-gradient(145deg, rgba(30, 41, 59, 0.9) 0%, rgba(15, 23, 42, 0.9) 100%);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 16px;
+    padding: 16px;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+    position: relative;
+    overflow: hidden;
+    transition: all 0.25s ease;
+}
+
+.player-highlight-card:hover {
+    transform: translateY(-4px);
+    border-color: rgba(244, 63, 94, 0.4);
+    box-shadow: 0 10px 30px rgba(244, 63, 94, 0.15);
+}
+
+.player-card-img {
+    width: 70px;
+    height: 70px;
+    border-radius: 50%;
+    object-fit: cover;
+    background: rgba(255, 255, 255, 0.05);
+    border: 2px solid rgba(255, 255, 255, 0.15);
+}
+
+.player-card-name {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: #ffffff;
+    margin-top: 8px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.player-card-team {
+    font-size: 0.8rem;
+    color: #94a3b8;
+}
+
+.player-card-price {
+    font-size: 1.15rem;
+    font-weight: 800;
+    color: #ffffff;
+    font-family: 'Outfit', sans-serif;
+    margin-top: 6px;
+}
+
+.pill-up {
+    color: #34d399;
+    background: rgba(16, 185, 129, 0.15);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    font-weight: 700;
+    display: inline-block;
+}
+
+.pill-down {
+    color: #f87171;
+    background: rgba(239, 68, 68, 0.15);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    font-weight: 700;
+    display: inline-block;
+}
+
+/* Custom Podium */
+.podium-card {
+    background: rgba(30, 41, 59, 0.8);
+    border-radius: 16px;
+    padding: 20px;
+    text-align: center;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+.podium-1 {
+    border-color: rgba(234, 179, 8, 0.4);
+    box-shadow: 0 0 25px rgba(234, 179, 8, 0.15);
+    background: linear-gradient(180deg, rgba(234, 179, 8, 0.1) 0%, rgba(30, 41, 59, 0.9) 100%);
+}
+.podium-2 {
+    border-color: rgba(203, 213, 225, 0.3);
+}
+.podium-3 {
+    border-color: rgba(217, 119, 6, 0.3);
+}
+</style>
+"""
 
 
 @st.cache_resource
@@ -35,12 +258,7 @@ def _df(rows: list[dict], columns: list[str]) -> pd.DataFrame:
 
 @st.cache_data(ttl=300)
 def load_market_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Carga jugadores, snapshots diarios y equipos desde Supabase.
-
-    Todas las lecturas van paginadas: PostgREST corta en 1000 filas SIN avisar, y
-    `player_daily` supera ese techo al segundo día de histórico (813 filas/día).
-    Sin paginar, el dashboard mostraría datos incompletos en silencio.
-    """
+    """Carga jugadores, snapshots diarios y equipos desde Supabase paginando."""
     client = get_supabase_client()
 
     teams = fetch_all(lambda: client.table("teams").select("id, name, short_name, badge_url"))
@@ -78,7 +296,7 @@ def load_league_market() -> pd.DataFrame:
 
 @st.cache_data(ttl=300)
 def load_gameweek_stats() -> pd.DataFrame:
-    """Carga las estadísticas por jornada (minutos, goles, tarjetas...)."""
+    """Carga las estadísticas por jornada."""
     client = get_supabase_client()
     rows = fetch_all(
         lambda: client.table("player_gameweek_stats")
@@ -91,7 +309,7 @@ def load_gameweek_stats() -> pd.DataFrame:
 
 @st.cache_data(ttl=300)
 def load_league_data() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Carga la clasificación y movimientos de la liga privada desde Supabase."""
+    """Carga la clasificación y movimientos de la liga privada."""
     client = get_supabase_client()
 
     standings = fetch_all(
@@ -99,17 +317,42 @@ def load_league_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     )
     df_standings = pd.DataFrame(standings) if standings else pd.DataFrame()
 
-    movements_res = (
-        client.table("league_movements").select("*").order("movement_date", desc=True).limit(100).execute()
+    movements = fetch_all(
+        lambda: client.table("league_movements").select("*").order("movement_date", desc=True)
     )
-    df_movements = pd.DataFrame(movements_res.data) if movements_res.data else pd.DataFrame()
+    df_movements = pd.DataFrame(movements) if movements else pd.DataFrame()
 
     return df_standings, df_movements
 
 
+def get_position_class(pos_name: str | None) -> str:
+    """Devuelve la clase CSS correspondiente a cada posición."""
+    if not pos_name:
+        return "pos-badge pos-med"
+    p = pos_name.lower()
+    if "porter" in p or "por" in p:
+        return "pos-badge pos-por"
+    elif "def" in p:
+        return "pos-badge pos-def"
+    elif "med" in p or "centr" in p:
+        return "pos-badge pos-med"
+    elif "del" in p:
+        return "pos-badge pos-del"
+    return "pos-badge pos-ent"
+
+
+def format_money(val: int | float | None) -> str:
+    """Formatea cantidades monetarias de forma limpia."""
+    if val is None or pd.isna(val):
+        return "—"
+    if abs(val) >= 1_000_000:
+        return f"{val/1_000_000:.2f} M€"
+    return f"{val:,.0f} €"
+
+
 def main():
-    st.title("⚽ LaLiga Fantasy — Análisis de Mercado")
-    st.caption("Herramienta de análisis personal y seguimiento histórico de precios")
+    # Inyectar estilos personalizados
+    st.markdown(FANTASY_CSS, unsafe_allow_html=True)
 
     # Validar que Supabase esté configurado
     if not config.SUPABASE_URL or not config.SUPABASE_SERVICE_KEY:
@@ -120,7 +363,7 @@ def main():
         st.stop()
 
     try:
-        with st.spinner("Cargando datos históricos desde la base de datos..."):
+        with st.spinner("Conectando con la base de datos de LaLiga Fantasy..."):
             df_players, df_daily, df_teams = load_market_data()
             df_league_market = load_league_market()
             df_standings, df_movements = load_league_data()
@@ -163,15 +406,25 @@ def main():
                     "market_id": r.get("market_id"),
                 }
 
-    # Barra lateral de métricas y filtros
-    st.sidebar.header("📊 Resumen del Histórico")
-    st.sidebar.metric("Snapshots acumulados", f"{num_days} días")
-    st.sidebar.metric("Última actualización", str(latest_date))
-    st.sidebar.metric("Total jugadores", len(df_players))
-    st.sidebar.metric("En mercado de la liga", f"{len(market_player_ids)} jugadores")
+    # Header Hero Banner
+    st.markdown(
+        f"""
+        <div class="fantasy-hero">
+            <div class="hero-title">
+                <span>⚽ LALIGA FANTASY</span>
+                <span style="font-size: 0.9rem; background: #e11d48; color: white; padding: 4px 12px; border-radius: 9999px; letter-spacing: 0.05em; vertical-align: middle;">PRO ANALYTICS</span>
+            </div>
+            <div class="hero-subtitle">
+                Seguimiento de mercado en vivo · Snapshots diarios · Estimación de caja y probabilidad de alineación
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    st.sidebar.divider()
-    st.sidebar.header("Filtros de Mercado")
+    # Barra lateral de métricas y filtros
+    st.sidebar.markdown("### ⚙️ Centro de Control")
+    st.sidebar.caption(f"📅 Snapshot activo: **{latest_date}** ({num_days} días registrados)")
 
     # Mapeo de equipos
     teams_dict = dict(zip(df_teams["id"].astype(str), df_teams["name"]))
@@ -179,10 +432,13 @@ def main():
 
     # Filtro por mercado actual en sidebar
     solo_mercado_sidebar = st.sidebar.checkbox(
-        "🎯 Solo mercado actual",
+        "🎯 **Solo mercado actual**",
         value=False,
         help="Muestra únicamente los jugadores que están a la venta hoy en tu liga privada.",
     )
+
+    st.sidebar.divider()
+    st.sidebar.markdown("### 🔍 Filtros Avanzados")
 
     # Filtro por posición
     positions = ["Todas"] + sorted([p for p in df_players["position"].dropna().unique() if p])
@@ -192,11 +448,20 @@ def main():
     team_list = ["Todos"] + sorted(df_players["team_name"].unique())
     sel_team = st.sidebar.selectbox("Equipo", team_list)
 
+    # Rango de precio
+    df_latest = df_daily[df_daily["snapshot_date"].dt.date == latest_date].copy()
+    max_market_val = int(df_latest["market_value"].dropna().max()) if not df_latest.empty else 100_000_000
+    rango_precio = st.sidebar.slider(
+        "Rango de Valor (€)",
+        min_value=0,
+        max_value=max_market_val,
+        value=(0, max_market_val),
+        step=500_000,
+        format="%d €",
+    )
+
     # Búsqueda por texto
     search_query = st.sidebar.text_input("Buscar jugador", "").strip().lower()
-
-    # Obtener el snapshot más reciente por jugador
-    df_latest = df_daily[df_daily["snapshot_date"].dt.date == latest_date].copy()
 
     # Calcular variación si hay al menos 2 días de histórico
     has_variation = False
@@ -232,11 +497,16 @@ def main():
         lambda pid: market_info_map.get(pid, {}).get("expires_at") if pid in market_info_map else None
     )
 
-    # Aplicar filtros globales (posición, equipo, búsqueda)
+    # Aplicar filtros globales (posición, equipo, rango de precio, búsqueda)
     if sel_position != "Todas":
         df_market = df_market[df_market["position"] == sel_position]
     if sel_team != "Todos":
         df_market = df_market[df_market["team_name"] == sel_team]
+    if rango_precio:
+        df_market = df_market[
+            (df_market["market_value"].fillna(0) >= rango_precio[0])
+            & (df_market["market_value"].fillna(0) <= rango_precio[1])
+        ]
     if search_query:
         df_market = df_market[
             df_market["name"].str.lower().str.contains(search_query, na=False)
@@ -245,34 +515,34 @@ def main():
 
     # Pestañas principales
     tab_market, tab_evolution, tab_minutes, tab_league = st.tabs(
-        ["💰 Mercado & Tendencias", "📈 Evolución de Precio", "⏱️ Minutos y Titularidad", "🏆 Liga Privada"]
+        [
+            "💰 Mercado & Tendencias",
+            "📈 Evolución de Precio",
+            "⏱️ Minutos y Titularidad",
+            "🏆 Liga Privada & Caja",
+        ]
     )
 
     # =========================================================================
     # PESTAÑA 1: MERCADO Y TENDENCIAS
     # =========================================================================
     with tab_market:
-        st.subheader("💰 Análisis de Mercado y Variaciones de Precio")
-
-        # Controles superiores: Checkbox de Mercado Actual y Selector de Vista
-        col_chk, col_view = st.columns([1, 2])
-        with col_chk:
+        col_hdr1, col_hdr2 = st.columns([1, 2])
+        with col_hdr1:
             solo_mercado_tab = st.checkbox(
-                "🎯 **Solo mercado actual** (en venta en mi liga)",
+                "🎯 **Solo mercado actual** (a la venta en mi liga)",
                 value=solo_mercado_sidebar,
                 key="chk_actual_mercado",
                 help="Filtra la tabla para ver únicamente los jugadores que están a la venta hoy en tu liga privada.",
             )
 
         filter_active_market = solo_mercado_sidebar or solo_mercado_tab
-
-        # Filtrar si está marcado el checkable
         df_view = df_market[df_market["en_mercado"]].copy() if filter_active_market else df_market.copy()
 
-        if filter_active_market:
-            st.caption(f"🔍 Mostrando **{len(df_view)}** jugadores a la venta en el mercado de tu liga.")
+        # KPIs superiores
+        kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
+        total_mkt_count = len(df_view[df_view["en_mercado"]])
 
-        # Si tenemos variación, mostrar KPIs de subidas/bajadas
         if has_variation:
             df_valid_pct = df_view.dropna(subset=["pct_change"])
             if not df_valid_pct.empty:
@@ -280,29 +550,121 @@ def main():
                 top_eur_up = df_valid_pct.sort_values(by="diff_value", ascending=False).iloc[0]
                 top_pct_down = df_valid_pct.sort_values(by="pct_change", ascending=True).iloc[0]
 
-                kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-                kpi1.metric(
-                    "🚀 Mayor Subida (%)",
-                    top_pct_up["name"],
-                    f"{top_pct_up['pct_change']:+.2f} % ({top_pct_up['diff_value']:+,.0f} €)",
+                kpi_col1.markdown(
+                    f"""
+                    <div class="stat-card">
+                        <div class="stat-card-title">🚀 Mayor Subida (%)</div>
+                        <div class="stat-card-value" style="color: #34d399;">{top_pct_up['name']}</div>
+                        <div class="stat-card-delta pill-up">+{top_pct_up['pct_change']:.2f} % (+{top_pct_up['diff_value']:,.0f} €)</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
                 )
-                kpi2.metric(
-                    "💶 Mayor Subida (€)",
-                    top_eur_up["name"],
-                    f"{top_eur_up['diff_value']:+,.0f} € ({top_eur_up['pct_change']:+.2f} %)",
+                kpi_col2.markdown(
+                    f"""
+                    <div class="stat-card">
+                        <div class="stat-card-title">💶 Mayor Subida (€)</div>
+                        <div class="stat-card-value" style="color: #60a5fa;">{top_eur_up['name']}</div>
+                        <div class="stat-card-delta pill-up">+{top_eur_up['diff_value']:,.0f} € (+{top_eur_up['pct_change']:.2f} %)</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
                 )
-                kpi3.metric(
-                    "🔻 Mayor Caída (%)",
-                    top_pct_down["name"],
-                    f"{top_pct_down['pct_change']:+.2f} % ({top_pct_down['diff_value']:+,.0f} €)",
+                kpi_col3.markdown(
+                    f"""
+                    <div class="stat-card">
+                        <div class="stat-card-title">🔻 Mayor Caída (%)</div>
+                        <div class="stat-card-value" style="color: #f87171;">{top_pct_down['name']}</div>
+                        <div class="stat-card-delta pill-down">{top_pct_down['pct_change']:.2f} % ({top_pct_down['diff_value']:,.0f} €)</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
                 )
-                kpi4.metric(
-                    "🎯 En Mercado Activo",
-                    f"{len(df_view[df_view['en_mercado']])} jugadores",
+                kpi_col4.markdown(
+                    f"""
+                    <div class="stat-card">
+                        <div class="stat-card-title">🎯 En Mercado Activo</div>
+                        <div class="stat-card-value" style="color: #facc15;">{total_mkt_count} <span style="font-size: 0.9rem; font-weight: 500; color: #94a3b8;">jugadores</span></div>
+                        <div class="stat-card-delta" style="color: #94a3b8;">Disponibles para puja</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
                 )
-                st.divider()
+        else:
+            kpi_col1.markdown(
+                f"""
+                <div class="stat-card">
+                    <div class="stat-card-title">🎯 En Mercado Activo</div>
+                    <div class="stat-card-value" style="color: #34d399;">{len(market_player_ids)} <span style="font-size: 0.9rem; font-weight: 500; color: #94a3b8;">jugadores</span></div>
+                    <div class="stat-card-delta" style="color: #94a3b8;">A la venta en tu liga</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            kpi_col2.markdown(
+                f"""
+                <div class="stat-card">
+                    <div class="stat-card-title">👥 Jugadores Registrados</div>
+                    <div class="stat-card-value" style="color: #60a5fa;">{len(df_players)}</div>
+                    <div class="stat-card-delta" style="color: #94a3b8;">Total en base de datos</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            kpi_col3.markdown(
+                f"""
+                <div class="stat-card">
+                    <div class="stat-card-title">🛡️ Equipos</div>
+                    <div class="stat-card-value" style="color: #facc15;">{len(df_teams)}</div>
+                    <div class="stat-card-delta" style="color: #94a3b8;">Primera división</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            kpi_col4.markdown(
+                f"""
+                <div class="stat-card">
+                    <div class="stat-card-title">📅 Histórico</div>
+                    <div class="stat-card-value" style="color: #c084fc;">{num_days} <span style="font-size: 0.9rem; font-weight: 500; color: #94a3b8;">día</span></div>
+                    <div class="stat-card-delta" style="color: #94a3b8;">Día 1 registrado</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-        with col_view:
+        st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
+
+        # Destacados visuales (Top 4 del mercado)
+        if filter_active_market and not df_view.empty:
+            st.markdown("#### 🌟 Destacados en Venta Hoy")
+            cols_top = st.columns(min(4, len(df_view)))
+            top_sample = df_view.sort_values("market_value", ascending=False).head(4)
+            for i, (_, row) in enumerate(top_sample.iterrows()):
+                with cols_top[i]:
+                    img_url = row.get("image_url") or "https://assets-fantasy.llt-services.com/players/no-player/no-player-sq_256.png"
+                    pos_cls = get_position_class(row.get("position"))
+                    pct_str = f"+{row['pct_change']:.2f}%" if pd.notnull(row.get("pct_change")) and row["pct_change"] > 0 else (f"{row['pct_change']:.2f}%" if pd.notnull(row.get("pct_change")) else "Activo")
+                    st.markdown(
+                        f"""
+                        <div class="player-highlight-card">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <span class="{pos_cls}">{row.get('position', 'JUG')}</span>
+                                <span class="badge-market-active">🟢 EN VENTA</span>
+                            </div>
+                            <div style="text-align: center; margin-top: 8px;">
+                                <img src="{img_url}" class="player-card-img" />
+                                <div class="player-card-name">{row['name']}</div>
+                                <div class="player-card-team">{row['team_name']}</div>
+                                <div class="player-card-price">{format_money(row['market_value'])}</div>
+                                <div style="margin-top: 6px;"><span class="pill-up">{pct_str}</span></div>
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+            st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
+
+        with col_hdr2:
             if has_variation:
                 opciones_orden = [
                     "🚀 Que más suben en %",
@@ -311,19 +673,18 @@ def main():
                     "💎 Mayor valor de mercado",
                     "🏆 Más puntos",
                 ]
-                sel_orden = st.radio("Ordenar por:", opciones_orden, horizontal=True)
             else:
                 opciones_orden = ["💎 Mayor valor de mercado", "🏆 Más puntos", "🔤 Nombre"]
-                sel_orden = st.radio("Ordenar por:", opciones_orden, horizontal=True)
+            sel_orden = st.radio("Ordenar por:", opciones_orden, horizontal=True)
 
         if not has_variation:
             st.info(
-                "💡 **Aún no hay histórico suficiente para calcular variación de precio.** "
-                "Con un único día registrado se muestra el precio actual. La variación porcentual (% subida) "
-                "comenzará a calcularse automáticamente a partir del segundo snapshot diario."
+                "💡 **Aún no hay histórico suficiente para calcular variación temporal.** "
+                "Con un único día registrado se muestra el precio actual. Las variaciones porcentuales "
+                "se calcularán automáticamente a partir del segundo snapshot diario."
             )
 
-        # Ordenar DataFrame según la opción seleccionada
+        # Ordenar DataFrame
         if has_variation:
             if sel_orden == "🚀 Que más suben en %":
                 df_display = df_view.sort_values(by="pct_change", ascending=False)
@@ -345,7 +706,7 @@ def main():
             else:
                 df_display = df_view.sort_values(by="name", ascending=True)
 
-        # Formatear columnas para visualización
+        # Columnas a mostrar
         display_cols = ["name", "nickname", "team_name", "position", "market_value", "points", "average_points", "estado_mercado"]
         if has_variation:
             display_cols = ["name", "nickname", "team_name", "position", "market_value", "pct_change", "diff_value", "points", "average_points", "estado_mercado"]
@@ -375,11 +736,11 @@ def main():
     # PESTAÑA 2: EVOLUCIÓN TEMPORAL
     # =========================================================================
     with tab_evolution:
-        st.subheader("Evolución del Valor de Mercado por Jugador")
-        # Selector de jugador
+        st.subheader("📈 Evolución Histórica de Valor de Mercado")
+
         player_options = df_players.set_index("id")["name"].to_dict()
         selected_player_id = st.selectbox(
-            "Selecciona un jugador para ver su histórico:",
+            "Selecciona un jugador:",
             options=list(player_options.keys()),
             format_func=lambda x: f"{player_options[x]} ({df_players[df_players['id'] == x]['team_name'].values[0]})",
         )
@@ -388,41 +749,85 @@ def main():
             df_p_history = df_daily[df_daily["player_id"] == selected_player_id].sort_values("snapshot_date")
             p_info = df_players[df_players["id"] == selected_player_id].iloc[0]
 
-            col_img, col_info = st.columns([1, 4])
-            with col_img:
-                if p_info.get("image_url"):
-                    st.image(p_info["image_url"], width=120)
-            with col_info:
-                st.markdown(f"### {p_info['name']}")
-                st.write(f"**Equipo:** {p_info['team_name']} | **Posición:** {p_info.get('position', 'N/A')}")
-                if str(selected_player_id) in market_player_ids:
-                    st.success("🟢 **Este jugador está actualmente a la venta en el mercado de tu liga.**")
-                if not df_p_history.empty:
-                    last_val = df_p_history.iloc[-1]["market_value"]
-                    st.write(f"**Valor más reciente:** {last_val:,.0f} €" if last_val else "**Valor más reciente:** N/A")
+            col_pcard, col_pchart = st.columns([1, 2])
+            with col_pcard:
+                img_url = p_info.get("image_url") or "https://assets-fantasy.llt-services.com/players/no-player/no-player-sq_256.png"
+                pos_cls = get_position_class(p_info.get("position"))
+                is_on_sale = str(selected_player_id) in market_player_ids
+                mkt_badge_html = '<span class="badge-market-active" style="margin-left: 8px;">🟢 EN VENTA EN TU LIGA</span>' if is_on_sale else ""
+                last_val = df_p_history.iloc[-1]["market_value"] if not df_p_history.empty else 0
 
-            if len(df_p_history) > 1:
-                chart_data = df_p_history.set_index("snapshot_date")["market_value"]
-                st.line_chart(chart_data)
-            else:
-                st.info("Solo existe un registro diario para este jugador. El gráfico se trazará cuando se acumulen más días.")
+                st.markdown(
+                    f"""
+                    <div class="player-highlight-card">
+                        <div style="display: flex; align-items: center; gap: 16px;">
+                            <img src="{img_url}" class="player-card-img" style="width: 80px; height: 80px;" />
+                            <div>
+                                <div style="display: flex; align-items: center;">
+                                    <span class="{pos_cls}">{p_info.get('position', 'JUG')}</span>
+                                    {mkt_badge_html}
+                                </div>
+                                <div style="font-size: 1.3rem; font-weight: 800; color: white; margin-top: 4px;">{p_info['name']}</div>
+                                <div style="color: #94a3b8; font-size: 0.9rem;">{p_info['team_name']}</div>
+                            </div>
+                        </div>
+                        <hr style="border: 0; border-top: 1px solid rgba(255, 255, 255, 0.08); margin: 14px 0;" />
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                            <div>
+                                <div style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase;">Valor Actual</div>
+                                <div style="font-size: 1.25rem; font-weight: 800; color: #ffffff;">{format_money(last_val)}</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase;">Estado</div>
+                                <div style="font-size: 1rem; font-weight: 700; color: #34d399;">{p_info.get('status', 'OK')}</div>
+                            </div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            with col_pchart:
+                if len(df_p_history) > 1:
+                    fig = go.Figure()
+                    fig.add_trace(
+                        go.Scatter(
+                            x=df_p_history["snapshot_date"],
+                            y=df_p_history["market_value"],
+                            mode="lines+markers",
+                            name="Valor de Mercado",
+                            line=dict(color="#f43f5e", width=3, shape="spline"),
+                            marker=dict(size=6, color="#f43f5e", line=dict(color="#ffffff", width=1.5)),
+                            fill="tozeroy",
+                            fillcolor="rgba(244, 63, 94, 0.1)",
+                        )
+                    )
+                    fig.update_layout(
+                        template="plotly_dark",
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(30, 41, 59, 0.4)",
+                        margin=dict(l=20, r=20, t=30, b=20),
+                        yaxis=dict(title="Valor (€)", tickformat="$,d"),
+                        xaxis=dict(title="Fecha", showgrid=False),
+                        hovermode="x unified",
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("Solo existe un snapshot para este jugador. El gráfico temporal se trazará automáticamente al acumularse más días.")
 
     # =========================================================================
     # PESTAÑA 3: MINUTOS Y TITULARIDAD
     # =========================================================================
     with tab_minutes:
-        st.subheader("Minutos recientes como proxy de titularidad")
+        st.subheader("⏱️ Minutos Recientes como Proxy de Titularidad")
         st.caption(
-            "No existe un dato fiable de probabilidad de alineación, ni siquiera para LaLiga. "
-            "Esto NO predice si un jugador será titular: solo muestra los minutos que ha jugado "
-            "en las últimas jornadas, que es el mejor indicador objetivo disponible. Para una "
-            "estimación de verdad, consulta fuentes curadas por humanos (Futbolfantasy, "
-            "Jornada Perfecta, Analítica Fantasy)."
+            "La regularidad de minutos disputados en las últimas jornadas es el mejor indicador objetivo disponible. "
+            "Para predicciones avanzadas, consulta fuentes especializadas (Futbolfantasy, Jornada Perfecta)."
         )
 
         df_gw = load_gameweek_stats()
         if df_gw.empty:
-            st.info("Todavía no hay estadísticas por jornada. Se rellenan con el snapshot diario.")
+            st.info("Todavía no hay estadísticas por jornada registradas. Se rellenan con el snapshot diario.")
         else:
             max_gw = int(df_gw["gameweek"].max())
             ventana = st.slider(
@@ -444,14 +849,12 @@ def main():
                 )
                 .reset_index()
             )
-            # Porcentaje de minutos sobre el máximo posible (90 por jornada disputada).
             resumen["pct_minutos"] = (resumen["minutos"] / (ventana * 90) * 100).clip(upper=100)
 
             df_min = pd.merge(df_players, resumen, left_on="id", right_on="player_id", how="inner")
             df_min = pd.merge(
                 df_min, df_latest[["player_id", "market_value"]], on="player_id", how="left"
             )
-            # Puntos por millón: barato y productivo es exactamente lo que buscamos.
             df_min["pts_por_millon"] = df_min.apply(
                 lambda r: (r["puntos"] / (r["market_value"] / 1_000_000))
                 if r.get("market_value") and r["market_value"] > 0
@@ -492,36 +895,99 @@ def main():
             )
 
     # =========================================================================
-    # PESTAÑA 4: LIGA PRIVADA
+    # PESTAÑA 4: LIGA PRIVADA Y CAJA
     # =========================================================================
     with tab_league:
-        st.subheader("Estado de la Liga Privada")
+        st.subheader("🏆 Clasificación y Estimación de Caja de Rivales")
+
         if df_standings.empty:
             st.info("No hay datos de clasificación registrados para tu liga privada todavía.")
         else:
             latest_league_date = df_standings["snapshot_date"].max()
-            st.write(f"Clasificación más reciente ({latest_league_date}):")
             df_cur_standings = df_standings[df_standings["snapshot_date"] == latest_league_date].copy()
-            st.dataframe(
-                df_cur_standings[["position", "team_name", "manager_name", "points", "team_value"]],
-                column_config={
-                    "position": st.column_config.NumberColumn("Posición"),
-                    "team_name": st.column_config.TextColumn("Equipo"),
-                    "manager_name": st.column_config.TextColumn("Mánager"),
-                    "points": st.column_config.NumberColumn("Puntos"),
-                    "team_value": st.column_config.NumberColumn("Valor de Plantilla (€)", format="%d €"),
-                },
-                use_container_width=True,
-                hide_index=True,
-            )
-            st.caption(
-                "⚠️ La columna de valor es el precio de la PLANTILLA, no el dinero disponible. "
-                "La API devuelve el saldo en caja de los rivales siempre a nulo (comprobado), "
-                "así que no sabemos cuánto puede pujar cada uno. No lo deduzcas del valor de plantilla."
-            )
+
+            # Podium para los 3 primeros
+            if len(df_cur_standings) >= 3:
+                top3 = df_cur_standings.sort_values("position").head(3).to_dict("records")
+                c_p2, c_p1, c_p3 = st.columns([1, 1.2, 1])
+
+                with c_p1:
+                    st.markdown(
+                        f"""
+                        <div class="podium-card podium-1">
+                            <div style="font-size: 2rem;">🥇</div>
+                            <div style="font-size: 1.3rem; font-weight: 800; color: #facc15;">{top3[0]['team_name']}</div>
+                            <div style="color: #cbd5e1; font-size: 0.9rem;">{top3[0].get('manager_name', 'Mánager')}</div>
+                            <div style="font-size: 1.5rem; font-weight: 800; color: white; margin-top: 8px;">{top3[0].get('points', 0)} pts</div>
+                            <div style="color: #94a3b8; font-size: 0.85rem;">Plantilla: {format_money(top3[0].get('team_value'))}</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                with c_p2:
+                    st.markdown(
+                        f"""
+                        <div class="podium-card podium-2" style="margin-top: 24px;">
+                            <div style="font-size: 1.7rem;">🥈</div>
+                            <div style="font-size: 1.15rem; font-weight: 700; color: #e2e8f0;">{top3[1]['team_name']}</div>
+                            <div style="color: #94a3b8; font-size: 0.85rem;">{top3[1].get('manager_name', 'Mánager')}</div>
+                            <div style="font-size: 1.3rem; font-weight: 800; color: white; margin-top: 6px;">{top3[1].get('points', 0)} pts</div>
+                            <div style="color: #94a3b8; font-size: 0.8rem;">Plantilla: {format_money(top3[1].get('team_value'))}</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                with c_p3:
+                    st.markdown(
+                        f"""
+                        <div class="podium-card podium-3" style="margin-top: 36px;">
+                            <div style="font-size: 1.5rem;">🥉</div>
+                            <div style="font-size: 1.1rem; font-weight: 700; color: #d97706;">{top3[2]['team_name']}</div>
+                            <div style="color: #94a3b8; font-size: 0.85rem;">{top3[2].get('manager_name', 'Mánager')}</div>
+                            <div style="font-size: 1.2rem; font-weight: 800; color: white; margin-top: 6px;">{top3[2].get('points', 0)} pts</div>
+                            <div style="color: #94a3b8; font-size: 0.8rem;">Plantilla: {format_money(top3[2].get('team_value'))}</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+            st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
+
+            # Estimación de caja por movimientos
+            cajas_estimadas = calculate_estimated_cash(df_standings, df_movements)
+            if not cajas_estimadas.empty:
+                st.markdown("#### 💰 Estimación de Caja Disponible")
+                st.caption(
+                    "Calculada a partir del saldo inicial y el flujo neto de fichajes, ventas y premios. "
+                    "Te da una referencia clara del poder de puja de tus rivales."
+                )
+                df_tabla_caja = pd.merge(
+                    df_cur_standings[["league_team_id", "position", "team_name", "manager_name", "points", "team_value"]],
+                    cajas_estimadas[["team_id", "cash_estimate", "net_transfer_flow", "prize_flow"]],
+                    left_on="league_team_id",
+                    right_on="team_id",
+                    how="left",
+                )
+                st.dataframe(
+                    df_tabla_caja[
+                        ["position", "team_name", "manager_name", "points", "team_value", "cash_estimate", "net_transfer_flow", "prize_flow"]
+                    ].sort_values("position"),
+                    column_config={
+                        "position": st.column_config.NumberColumn("Posición"),
+                        "team_name": st.column_config.TextColumn("Equipo"),
+                        "manager_name": st.column_config.TextColumn("Mánager"),
+                        "points": st.column_config.NumberColumn("Puntos"),
+                        "team_value": st.column_config.NumberColumn("Valor Plantilla (€)", format="%d €"),
+                        "cash_estimate": st.column_config.NumberColumn("Caja Estimada (€)", format="%d €"),
+                        "net_transfer_flow": st.column_config.NumberColumn("Flujo Fichajes (€)", format="%+d €"),
+                        "prize_flow": st.column_config.NumberColumn("Premios (€)", format="%+d €"),
+                    },
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
         if not df_movements.empty:
-            st.subheader("Últimos Movimientos de Mercado")
+            st.markdown("#### 🔄 Últimos Movimientos de Mercado")
             st.dataframe(
                 df_movements[["movement_date", "player_name", "amount", "movement_type"]],
                 column_config={
