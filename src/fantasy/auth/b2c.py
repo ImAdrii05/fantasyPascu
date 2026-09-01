@@ -69,14 +69,36 @@ def refresh_access_token(
     except requests.RequestException as e:
         raise AuthBackendChanged(f"Error de conexión al endpoint de B2C: {e}") from e
 
-    # Manejo de expiración / revocación de token
+    # Manejo de respuestas HTTP 400/401 con discriminación de error
     if response.status_code in (400, 401):
+        err_code = ""
+        err_desc = response.text
         try:
             err_data = response.json()
-            err_desc = err_data.get("error_description") or err_data.get("error") or response.text
+            err_code = str(err_data.get("error") or "")
+            err_desc = str(err_data.get("error_description") or err_code or response.text)
         except Exception:
-            err_desc = response.text
-        raise AuthExpired(f"HTTP {response.status_code}: {err_desc}")
+            pass
+
+        # Error en el cliente OAuth2 (client_id inválido o no autorizado)
+        if err_code in ("invalid_client", "unauthorized_client"):
+            raise AuthBackendChanged(
+                f"Error de configuración de cliente OAuth2 ({err_code}). "
+                f"El B2C_CLIENT_ID ('{used_client_id}') no es válido o no está autorizado. "
+                f"Detalle: {err_desc}",
+                status_code=response.status_code,
+            )
+
+        # Error de parámetros en la petición
+        if err_code == "invalid_request":
+            raise AuthBackendChanged(
+                f"Petición rechazada por B2C ({err_code}). "
+                f"Verifica B2C_POLICY y B2C_SCOPE en tu .env. Detalle: {err_desc}",
+                status_code=response.status_code,
+            )
+
+        # Token expirado o revocado (invalid_grant o 401)
+        raise AuthExpired(f"HTTP {response.status_code} ({err_code or 'error'}): {err_desc}")
 
     # Respuestas de error HTTP 404, 500, etc.
     if not response.ok:

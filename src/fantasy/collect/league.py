@@ -3,6 +3,7 @@
 import logging
 from datetime import date
 from fantasy.api.client import FantasyApiClient
+from fantasy.api.models import MarketItem
 from fantasy.collect.raw import persist_raw
 from fantasy.store.supabase import SupabaseStore
 
@@ -18,25 +19,31 @@ def collect_league(
     """Descarga el mercado, la clasificación y el histórico de actividad de la liga privada.
 
     NOTA DE ARQUITECTURA:
-    La API de LaLiga Fantasy expone la clasificación con `team_value` y `points`,
-    así como los movimientos individuales en `activity`. NO expone el dinero líquido
-    en caja disponible de cada rival. Este módulo almacena estrictamente los datos
-    reales sin realizar estimaciones inventadas de saldo en caja.
+    Pendiente de verificar con la respuesta real de la API tras la captura de token
+    si existe algún campo de saldo líquido disponible en caja de los rivales.
+    Hasta confirmar con la respuesta en vivo, se almacenan estrictamente el valor
+    de plantilla (`team_value`), puntos y movimientos.
 
     Returns:
-        Diccionario con conteos de filas afectadas: {"league_standings": N, "league_movements": N}.
+        Diccionario con conteos de filas afectadas: {"league_market": N, "league_standings": N, "league_movements": N}.
     """
-    counts = {"league_standings": 0, "league_movements": 0}
+    counts = {"league_market": 0, "league_standings": 0, "league_movements": 0}
     str_league_id = str(league_id)
 
     # 1. Mercado actual de la liga
     logger.info(f"Descargando mercado de la liga privada {str_league_id}...")
     try:
-        market_items, raw_market = api_client.get_league_market(str_league_id)
+        raw_market_items, raw_market = api_client.get_league_market(str_league_id)
         persist_raw(f"league_{str_league_id}_market", raw_market, store=store)
-        logger.info(f"Mercado de la liga procesado: {len(market_items)} items disponibles.")
+        market_models = [
+            MarketItem.from_api(str_league_id, item)
+            for item in raw_market_items
+            if isinstance(item, dict)
+        ]
+        counts["league_market"] = store.upsert_league_market(market_models, snapshot_date=snapshot_date)
+        logger.info(f"Mercado de la liga procesado: {counts['league_market']} items guardados en tabla league_market.")
     except Exception as e:
-        logger.warning(f"Error al descargar mercado de la liga: {e}")
+        logger.warning(f"Error al descargar o procesar mercado de la liga: {e}")
 
     # 2. Clasificación de la liga
     logger.info(f"Descargando clasificación de la liga privada {str_league_id}...")
@@ -51,7 +58,7 @@ def collect_league(
     counts["league_movements"] = store.upsert_league_movements(movements)
 
     logger.info(
-        f"Recolección de liga {str_league_id} finalizada: "
+        f"Recolección de liga {str_league_id} finalizada: {counts['league_market']} mercado, "
         f"{counts['league_standings']} clasificados, {counts['league_movements']} movimientos."
     )
     return counts

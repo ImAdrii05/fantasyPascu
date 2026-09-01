@@ -113,17 +113,19 @@ class SupabaseTokenStore(BaseTokenStore):
     def save(self, tokens: TokenSet) -> None:
         client = self._get_client()
         if not client:
-            return
+            raise RuntimeError("Cliente de Supabase no disponible para guardar auth_state.")
         try:
+            from datetime import datetime, timezone
             payload = {
                 "id": "primary",
                 "tokens": tokens.to_dict(),
-                "updated_at": "now()",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
             }
-            client.table("auth_state").upsert(payload).execute()
+            client.table("auth_state").upsert(payload, on_conflict="id").execute()
             logger.info("TokenSet persistido exitosamente en Supabase (auth_state).")
         except Exception as e:
-            logger.warning(f"Error al guardar token en Supabase (auth_state): {e}")
+            logger.error(f"Error crítico al guardar token en Supabase (auth_state): {e}")
+            raise
 
 
 class HybridTokenStore(BaseTokenStore):

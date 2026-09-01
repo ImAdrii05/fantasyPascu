@@ -60,9 +60,8 @@ CREATE TABLE IF NOT EXISTS player_gameweek_stats (
 );
 
 -- 5. Clasificación y estado de la Liga Privada
--- NOTA IMPORTANTE: La API de LaLiga Fantasy expone el valor de plantilla (team_value)
--- y los puntos, pero NO expone el saldo líquido en caja disponible de los rivales.
--- No estimar ni inferir available_cash.
+-- NOTA: Pendiente de verificar con la respuesta real de la API tras la captura de token.
+-- No asumir ni inventar saldo en caja (available_cash) hasta inspeccionar el payload real.
 CREATE TABLE IF NOT EXISTS league_standings (
     snapshot_date DATE NOT NULL,
     league_team_id TEXT NOT NULL,
@@ -78,7 +77,23 @@ CREATE TABLE IF NOT EXISTS league_standings (
 
 CREATE INDEX IF NOT EXISTS idx_league_standings_league ON league_standings(league_id);
 
--- 6. Historial de movimientos de mercado y actividad de la liga
+-- 6. Mercado diario de la Liga Privada
+CREATE TABLE IF NOT EXISTS league_market (
+    snapshot_date DATE NOT NULL,
+    league_id TEXT NOT NULL,
+    market_id TEXT NOT NULL,
+    player_id TEXT REFERENCES players(id) ON DELETE CASCADE,
+    price BIGINT,
+    owner_team_id TEXT,
+    expires_at TIMESTAMPTZ,
+    fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (snapshot_date, league_id, market_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_league_market_league ON league_market(league_id);
+CREATE INDEX IF NOT EXISTS idx_league_market_player ON league_market(player_id);
+
+-- 7. Historial de movimientos de mercado y actividad de la liga
 CREATE TABLE IF NOT EXISTS league_movements (
     movement_id TEXT PRIMARY KEY,
     league_id TEXT NOT NULL,
@@ -90,14 +105,13 @@ CREATE TABLE IF NOT EXISTS league_movements (
     movement_type TEXT,
     movement_date TIMESTAMPTZ,
     raw_payload JSONB,
-    fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT uq_league_movement UNIQUE (league_id, player_id, movement_date, to_team_id)
+    fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_league_movements_league ON league_movements(league_id);
 CREATE INDEX IF NOT EXISTS idx_league_movements_date ON league_movements(movement_date);
 
--- 7. Snapshots crudos en JSONB (preserva el 100% de la información original antes de normalizar)
+-- 8. Snapshots crudos en JSONB (preserva el 100% de la información original antes de normalizar)
 CREATE TABLE IF NOT EXISTS raw_snapshots (
     id BIGSERIAL PRIMARY KEY,
     snapshot_date DATE NOT NULL DEFAULT CURRENT_DATE,
@@ -108,7 +122,7 @@ CREATE TABLE IF NOT EXISTS raw_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_raw_snapshots_date_endpoint ON raw_snapshots(snapshot_date, endpoint);
 
--- 8. Almacén de estado de autenticación (persistencia del refresh_token rotado en CI)
+-- 9. Almacén de estado de autenticación (persistencia del refresh_token rotado en CI)
 CREATE TABLE IF NOT EXISTS auth_state (
     id TEXT PRIMARY KEY DEFAULT 'primary',
     tokens JSONB NOT NULL,
@@ -124,6 +138,7 @@ ALTER TABLE players ENABLE ROW LEVEL SECURITY;
 ALTER TABLE player_daily ENABLE ROW LEVEL SECURITY;
 ALTER TABLE player_gameweek_stats ENABLE ROW LEVEL SECURITY;
 ALTER TABLE league_standings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE league_market ENABLE ROW LEVEL SECURITY;
 ALTER TABLE league_movements ENABLE ROW LEVEL SECURITY;
 ALTER TABLE raw_snapshots ENABLE ROW LEVEL SECURITY;
 ALTER TABLE auth_state ENABLE ROW LEVEL SECURITY;

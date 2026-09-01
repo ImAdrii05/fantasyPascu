@@ -44,6 +44,8 @@ def run_daily() -> int:
         "teams": 0,
         "players": 0,
         "player_daily": 0,
+        "player_gameweek_stats": 0,
+        "league_market": 0,
         "league_standings": 0,
         "league_movements": 0,
     }

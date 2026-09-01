@@ -106,3 +106,54 @@ def test_api_client_retry_and_throttle():
     result = client.get(test_url)
     assert result == {"status": "ok"}
     assert len(responses.calls) == 2
+
+
+def test_market_item_from_api():
+    from fantasy.api.models import MarketItem
+
+    data = {
+        "id": "market_item_555",
+        "player": {"id": "1001", "name": "Vinicius Jr"},
+        "price": 85000000,
+        "teamId": "19",
+        "expirationDate": "2026-09-02T04:00:00Z",
+    }
+    item = MarketItem.from_api("league_123", data)
+    assert item.market_id == "market_item_555"
+    assert item.league_id == "league_123"
+    assert item.player_id == "1001"
+    assert item.price == 85000000
+    assert item.owner_team_id == "19"
+    assert item.expires_at == "2026-09-02T04:00:00Z"
+
+
+def test_extract_gameweek_stats():
+    from fantasy.collect.players import extract_gameweek_stats
+
+    raw_payload = [
+        {
+            "id": "1001",
+            "name": "Vinicius Jr",
+            "playerStats": [
+                {"weekNumber": 1, "points": 8, "minutes": 90, "goals": 1},
+                {"weekNumber": 2, "points": 5, "minutes": 75, "goals": 0},
+            ],
+        },
+        {
+            "id": "1002",
+            "name": "Courtois",
+            "stats": [
+                {"gameweek": 1, "points": 6, "minutes": 90},
+            ],
+        },
+    ]
+    stats = extract_gameweek_stats(raw_payload)
+    assert len(stats) == 3
+    assert stats[0].player_id == "1001"
+    assert stats[0].gameweek == 1
+    assert stats[0].points == 8
+    assert stats[0].goals == 1
+    assert stats[2].player_id == "1002"
+    assert stats[2].gameweek == 1
+    assert stats[2].points == 6
+

@@ -294,3 +294,54 @@ class LeagueMovement:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass
+class MarketItem:
+    """Jugador o ítem en el mercado de una liga privada."""
+    market_id: str
+    league_id: str
+    player_id: str | None = None
+    price: int | None = None
+    owner_team_id: str | None = None
+    expires_at: str | None = None
+    raw_payload: dict[str, Any] | None = None
+
+    @classmethod
+    def from_api(cls, league_id: str, data: dict[str, Any]) -> "MarketItem":
+        market_id = str(data.get("id") or data.get("marketId") or "")
+        player_obj = data.get("player") or data.get("playerMaster") or {}
+        player_id = None
+        if isinstance(player_obj, dict) and player_obj.get("id"):
+            player_id = str(player_obj["id"])
+        elif data.get("playerId"):
+            player_id = str(data["playerId"])
+
+        price = data.get("price") or data.get("marketValue") or data.get("buyoutClause")
+        if price is not None:
+            try:
+                price = int(price)
+            except (ValueError, TypeError):
+                price = None
+
+        team_obj = data.get("team") or {}
+        owner_team_id = (
+            str(data.get("teamId") or (team_obj.get("id") if isinstance(team_obj, dict) else "") or "")
+            or None
+        )
+
+        expires_at = data.get("expirationDate") or data.get("expiresAt") or data.get("expiration")
+
+        return cls(
+            market_id=market_id,
+            league_id=str(league_id),
+            player_id=player_id,
+            price=price,
+            owner_team_id=owner_team_id,
+            expires_at=str(expires_at) if expires_at else None,
+            raw_payload=data,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+

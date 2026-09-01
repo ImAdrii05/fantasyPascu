@@ -162,3 +162,27 @@ def test_refresh_html_or_bad_response_raises_auth_backend_changed():
     err_msg = str(exc_info.value)
     assert "El backend de B2C respondió algo inesperado" in err_msg
     assert "secret12345" not in err_msg
+
+
+@responses.activate
+def test_refresh_invalid_client_raises_auth_backend_changed():
+    """Un error invalid_client en B2C debe señalar problema de configuración de client_id."""
+    endpoint = get_token_endpoint()
+    responses.add(
+        responses.POST,
+        endpoint,
+        json={"error": "invalid_client", "error_description": "The client id is not valid."},
+        status=400,
+    )
+
+    expired_tokens = TokenSet(
+        access_token="expired_token",
+        refresh_token="valid_refresh_token",
+        expires_at=int(time.time()) - 10,
+    )
+    set_token_store(MemoryTokenStore(expired_tokens))
+
+    with pytest.raises(AuthBackendChanged) as exc_info:
+        get_access_token()
+    assert "B2C_CLIENT_ID" in str(exc_info.value)
+

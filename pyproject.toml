@@ -7,7 +7,7 @@ name = "fantasy"
 version = "0.1.0"
 description = "App personal de análisis para LaLiga Fantasy"
 readme = "README.md"
-requires-python = ">=3.13,<3.14"
+requires-python = ">=3.13"
 dependencies = [
     "requests>=2.31.0",
     "pandas>=2.2.0",

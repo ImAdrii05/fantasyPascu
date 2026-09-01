@@ -1,11 +1,11 @@
 """Operaciones idempotentes de persistencia y upsert en Supabase."""
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 import logging
 from typing import Any
 from supabase import create_client, Client
 
-from fantasy.api.models import Team, Player, PlayerGameweekStat, LeagueStanding, LeagueMovement
+from fantasy.api.models import Team, Player, PlayerGameweekStat, LeagueStanding, LeagueMovement, MarketItem
 from fantasy import config
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ class SupabaseStore:
             "snapshot_date": snapshot_date,
             "endpoint": endpoint,
             "payload": payload,
-            "fetched_at": datetime.utcnow().isoformat(),
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
             self.client.table("raw_snapshots").insert(row).execute()
@@ -58,7 +58,7 @@ class SupabaseStore:
                 "short_name": t.short_name,
                 "slug": t.slug,
                 "badge_url": t.badge_url,
-                "updated_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
             }
             for t in teams
             if t.id
@@ -85,7 +85,7 @@ class SupabaseStore:
                 "team_id": p.team_id,
                 "status": p.status,
                 "image_url": p.image_url,
-                "updated_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
             }
             for p in players
             if p.id
@@ -115,7 +115,7 @@ class SupabaseStore:
                 "average_points": p.average_points,
                 "played_matches": p.played_matches,
                 "minutes_played": p.minutes_played,
-                "fetched_at": datetime.utcnow().isoformat(),
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
             }
             for p in players
             if p.id
@@ -141,7 +141,7 @@ class SupabaseStore:
                 "assists": s.assists,
                 "yellow_cards": s.yellow_cards,
                 "red_cards": s.red_cards,
-                "fetched_at": datetime.utcnow().isoformat(),
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
             }
             for s in stats
             if s.player_id and s.gameweek
@@ -172,7 +172,7 @@ class SupabaseStore:
                 "team_value": s.team_value,
                 "points": s.points,
                 "position": s.position,
-                "fetched_at": datetime.utcnow().isoformat(),
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
             }
             for s in standings
             if s.league_team_id
@@ -182,6 +182,36 @@ class SupabaseStore:
             self.client.table("league_standings").upsert(chunk, on_conflict="snapshot_date,league_team_id").execute()
             count += len(chunk)
         logger.info(f"Upsert de {count} registros en league_standings para fecha {snapshot_date}.")
+        return count
+
+    def upsert_league_market(self, market_items: list[MarketItem], snapshot_date: str | date | None = None) -> int:
+        """Guarda el snapshot diario del mercado de la liga privada (Idempotente)."""
+        if not market_items:
+            return 0
+        if snapshot_date is None:
+            snapshot_date = date.today().isoformat()
+        elif isinstance(snapshot_date, date):
+            snapshot_date = snapshot_date.isoformat()
+
+        rows = [
+            {
+                "snapshot_date": snapshot_date,
+                "league_id": m.league_id,
+                "market_id": m.market_id,
+                "player_id": m.player_id,
+                "price": m.price,
+                "owner_team_id": m.owner_team_id,
+                "expires_at": m.expires_at,
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+            }
+            for m in market_items
+            if m.market_id and m.league_id
+        ]
+        count = 0
+        for chunk in chunk_list(rows):
+            self.client.table("league_market").upsert(chunk, on_conflict="snapshot_date,league_id,market_id").execute()
+            count += len(chunk)
+        logger.info(f"Upsert de {count} items en league_market para fecha {snapshot_date}.")
         return count
 
     def upsert_league_movements(self, movements: list[LeagueMovement]) -> int:
@@ -200,7 +230,7 @@ class SupabaseStore:
                 "movement_type": str(m.movement_type) if m.movement_type is not None else None,
                 "movement_date": m.movement_date,
                 "raw_payload": m.raw_payload,
-                "fetched_at": datetime.utcnow().isoformat(),
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
             }
             for m in movements
             if m.movement_id
