@@ -1,7 +1,8 @@
 """Dashboard interactivo para análisis de mercado de LaLiga Fantasy en Streamlit.
 
-Diseño visual premium estilo Fantasy: Glassmorphism, Dark UI, badges de posición,
-gráficos interactivos con Plotly y seguimiento en tiempo real del mercado.
+Diseño visual premium estilo Fantasy: Glassmorphism, Dark UI, fotos de futbolistas,
+ranking 1, 2, 3, 4, 5..., badges de posición, gráficos interactivos con Plotly y
+seguimiento en tiempo real del mercado.
 """
 
 from datetime import date, datetime
@@ -44,8 +45,8 @@ h1, h2, h3, h4, .fantasy-font {
     background: linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(30, 27, 75, 0.9) 50%, rgba(15, 23, 42, 0.95) 100%);
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 20px;
-    padding: 24px 32px;
-    margin-bottom: 24px;
+    padding: 22px 28px;
+    margin-bottom: 20px;
     box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.5);
     position: relative;
     overflow: hidden;
@@ -63,7 +64,7 @@ h1, h2, h3, h4, .fantasy-font {
 }
 
 .hero-title {
-    font-size: 2.2rem;
+    font-size: 2.1rem;
     font-weight: 800;
     background: linear-gradient(90deg, #ffffff 0%, #cbd5e1 50%, #f43f5e 100%);
     -webkit-background-clip: text;
@@ -76,8 +77,8 @@ h1, h2, h3, h4, .fantasy-font {
 
 .hero-subtitle {
     color: #94a3b8;
-    font-size: 0.95rem;
-    margin-top: 6px;
+    font-size: 0.92rem;
+    margin-top: 4px;
 }
 
 /* Stat Cards */
@@ -86,7 +87,7 @@ h1, h2, h3, h4, .fantasy-font {
     backdrop-filter: blur(12px);
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 16px;
-    padding: 18px 20px;
+    padding: 16px 18px;
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
     transition: transform 0.2s ease, border-color 0.2s ease;
 }
@@ -98,22 +99,25 @@ h1, h2, h3, h4, .fantasy-font {
 
 .stat-card-title {
     color: #94a3b8;
-    font-size: 0.8rem;
+    font-size: 0.75rem;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    margin-bottom: 6px;
+    margin-bottom: 4px;
 }
 
 .stat-card-value {
     color: #ffffff;
-    font-size: 1.5rem;
+    font-size: 1.35rem;
     font-weight: 800;
     font-family: 'Outfit', sans-serif;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .stat-card-delta {
-    font-size: 0.85rem;
+    font-size: 0.8rem;
     font-weight: 600;
     margin-top: 4px;
 }
@@ -168,8 +172,8 @@ h1, h2, h3, h4, .fantasy-font {
 }
 
 .player-card-img {
-    width: 70px;
-    height: 70px;
+    width: 68px;
+    height: 68px;
     border-radius: 50%;
     object-fit: cover;
     background: rgba(255, 255, 255, 0.05);
@@ -242,6 +246,8 @@ h1, h2, h3, h4, .fantasy-font {
 }
 </style>
 """
+
+NO_PLAYER_IMG = "https://assets-fantasy.llt-services.com/players/no-player/no-player-sq_256.png"
 
 
 @st.cache_resource
@@ -424,7 +430,7 @@ def main():
 
     # Barra lateral de métricas y filtros
     st.sidebar.markdown("### ⚙️ Centro de Control")
-    st.sidebar.caption(f"📅 Snapshot activo: **{latest_date}** ({num_days} días registrados)")
+    st.sidebar.caption(f"📅 Snapshot activo: **{latest_date}** ({num_days} días acumulados)")
 
     # Mapeo de equipos
     teams_dict = dict(zip(df_teams["id"].astype(str), df_teams["name"]))
@@ -438,7 +444,7 @@ def main():
     )
 
     st.sidebar.divider()
-    st.sidebar.markdown("### 🔍 Filtros Avanzados")
+    st.sidebar.markdown("### 🔍 Filtros Globales")
 
     # Filtro por posición
     positions = ["Todas"] + sorted([p for p in df_players["position"].dropna().unique() if p])
@@ -493,6 +499,7 @@ def main():
     # Añadir columna indicadora de mercado actual
     df_market["en_mercado"] = df_market["id"].astype(str).isin(market_player_ids)
     df_market["estado_mercado"] = df_market["en_mercado"].apply(lambda x: "🟢 EN VENTA" if x else "—")
+    df_market["foto"] = df_market["image_url"].fillna(NO_PLAYER_IMG)
     df_market["fin_subasta"] = df_market["id"].astype(str).map(
         lambda pid: market_info_map.get(pid, {}).get("expires_at") if pid in market_info_map else None
     )
@@ -524,24 +531,45 @@ def main():
     )
 
     # =========================================================================
-    # PESTAÑA 1: MERCADO Y TENDENCIAS
+    # PESTAÑA 1: MERCADO Y TENDENCIAS (MUY PRÁCTICO + FOTOS + RANKING)
     # =========================================================================
     with tab_market:
-        col_hdr1, col_hdr2 = st.columns([1, 2])
-        with col_hdr1:
+        col_ctrl1, col_ctrl2 = st.columns([1.2, 2.8])
+        with col_ctrl1:
             solo_mercado_tab = st.checkbox(
-                "🎯 **Solo mercado actual** (a la venta en mi liga)",
+                "🎯 **Solo mercado actual** (en venta en mi liga)",
                 value=solo_mercado_sidebar,
                 key="chk_actual_mercado",
-                help="Filtra la tabla para ver únicamente los jugadores que están a la venta hoy en tu liga privada.",
+                help="Filtra para ver únicamente los jugadores que están a la venta hoy en tu liga privada.",
             )
 
         filter_active_market = solo_mercado_sidebar or solo_mercado_tab
         df_view = df_market[df_market["en_mercado"]].copy() if filter_active_market else df_market.copy()
 
-        # KPIs superiores
-        kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
-        total_mkt_count = len(df_view[df_view["en_mercado"]])
+        # Selector de ordenación dinámico y muy práctico
+        with col_ctrl2:
+            if has_variation:
+                opciones_orden = [
+                    "🚀 Mayor subida (%)",
+                    "💶 Mayor subida (€)",
+                    "💎 Mayor valor (€)",
+                    "🔻 Mayor caída (%)",
+                    "🏆 Más puntos",
+                    "📈 Mejor media",
+                    "🔤 Nombre (A-Z)",
+                ]
+            else:
+                opciones_orden = [
+                    "💎 Mayor valor (€)",
+                    "🏆 Más puntos",
+                    "📈 Mejor media",
+                    "🔤 Nombre (A-Z)",
+                ]
+            sel_orden = st.radio("Ordenar ranking por:", opciones_orden, horizontal=True)
+
+        # KPIs superiores estilizados
+        kpi_c1, kpi_c2, kpi_c3, kpi_c4 = st.columns(4)
+        total_mkt_active = len(df_view[df_view["en_mercado"]])
 
         if has_variation:
             df_valid_pct = df_view.dropna(subset=["pct_change"])
@@ -550,7 +578,7 @@ def main():
                 top_eur_up = df_valid_pct.sort_values(by="diff_value", ascending=False).iloc[0]
                 top_pct_down = df_valid_pct.sort_values(by="pct_change", ascending=True).iloc[0]
 
-                kpi_col1.markdown(
+                kpi_c1.markdown(
                     f"""
                     <div class="stat-card">
                         <div class="stat-card-title">🚀 Mayor Subida (%)</div>
@@ -560,7 +588,7 @@ def main():
                     """,
                     unsafe_allow_html=True,
                 )
-                kpi_col2.markdown(
+                kpi_c2.markdown(
                     f"""
                     <div class="stat-card">
                         <div class="stat-card-title">💶 Mayor Subida (€)</div>
@@ -570,7 +598,7 @@ def main():
                     """,
                     unsafe_allow_html=True,
                 )
-                kpi_col3.markdown(
+                kpi_c3.markdown(
                     f"""
                     <div class="stat-card">
                         <div class="stat-card-title">🔻 Mayor Caída (%)</div>
@@ -580,18 +608,18 @@ def main():
                     """,
                     unsafe_allow_html=True,
                 )
-                kpi_col4.markdown(
+                kpi_c4.markdown(
                     f"""
                     <div class="stat-card">
                         <div class="stat-card-title">🎯 En Mercado Activo</div>
-                        <div class="stat-card-value" style="color: #facc15;">{total_mkt_count} <span style="font-size: 0.9rem; font-weight: 500; color: #94a3b8;">jugadores</span></div>
-                        <div class="stat-card-delta" style="color: #94a3b8;">Disponibles para puja</div>
+                        <div class="stat-card-value" style="color: #facc15;">{total_mkt_active} <span style="font-size: 0.9rem; font-weight: 500; color: #94a3b8;">jugadores</span></div>
+                        <div class="stat-card-delta" style="color: #94a3b8;">A la venta en tu liga</div>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
         else:
-            kpi_col1.markdown(
+            kpi_c1.markdown(
                 f"""
                 <div class="stat-card">
                     <div class="stat-card-title">🎯 En Mercado Activo</div>
@@ -601,17 +629,17 @@ def main():
                 """,
                 unsafe_allow_html=True,
             )
-            kpi_col2.markdown(
+            kpi_c2.markdown(
                 f"""
                 <div class="stat-card">
-                    <div class="stat-card-title">👥 Jugadores Registrados</div>
+                    <div class="stat-card-title">👥 Total Jugadores</div>
                     <div class="stat-card-value" style="color: #60a5fa;">{len(df_players)}</div>
-                    <div class="stat-card-delta" style="color: #94a3b8;">Total en base de datos</div>
+                    <div class="stat-card-delta" style="color: #94a3b8;">En la base de datos</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
-            kpi_col3.markdown(
+            kpi_c3.markdown(
                 f"""
                 <div class="stat-card">
                     <div class="stat-card-title">🛡️ Equipos</div>
@@ -621,10 +649,10 @@ def main():
                 """,
                 unsafe_allow_html=True,
             )
-            kpi_col4.markdown(
+            kpi_c4.markdown(
                 f"""
                 <div class="stat-card">
-                    <div class="stat-card-title">📅 Histórico</div>
+                    <div class="stat-card-title">📅 Snapshots</div>
                     <div class="stat-card-value" style="color: #c084fc;">{num_days} <span style="font-size: 0.9rem; font-weight: 500; color: #94a3b8;">día</span></div>
                     <div class="stat-card-delta" style="color: #94a3b8;">Día 1 registrado</div>
                 </div>
@@ -632,16 +660,16 @@ def main():
                 unsafe_allow_html=True,
             )
 
-        st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
 
-        # Destacados visuales (Top 4 del mercado)
+        # Destacados en tarjetas visuales (Top 4 del mercado activo)
         if filter_active_market and not df_view.empty:
             st.markdown("#### 🌟 Destacados en Venta Hoy")
             cols_top = st.columns(min(4, len(df_view)))
             top_sample = df_view.sort_values("market_value", ascending=False).head(4)
             for i, (_, row) in enumerate(top_sample.iterrows()):
                 with cols_top[i]:
-                    img_url = row.get("image_url") or "https://assets-fantasy.llt-services.com/players/no-player/no-player-sq_256.png"
+                    img_url = row.get("image_url") or NO_PLAYER_IMG
                     pos_cls = get_position_class(row.get("position"))
                     pct_str = f"+{row['pct_change']:.2f}%" if pd.notnull(row.get("pct_change")) and row["pct_change"] > 0 else (f"{row['pct_change']:.2f}%" if pd.notnull(row.get("pct_change")) else "Activo")
                     st.markdown(
@@ -662,56 +690,53 @@ def main():
                         """,
                         unsafe_allow_html=True,
                     )
-            st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
-
-        with col_hdr2:
-            if has_variation:
-                opciones_orden = [
-                    "🚀 Que más suben en %",
-                    "💶 Que más suben en €",
-                    "🔻 Que más bajan en %",
-                    "💎 Mayor valor de mercado",
-                    "🏆 Más puntos",
-                ]
-            else:
-                opciones_orden = ["💎 Mayor valor de mercado", "🏆 Más puntos", "🔤 Nombre"]
-            sel_orden = st.radio("Ordenar por:", opciones_orden, horizontal=True)
+            st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
 
         if not has_variation:
             st.info(
                 "💡 **Aún no hay histórico suficiente para calcular variación temporal.** "
-                "Con un único día registrado se muestra el precio actual. Las variaciones porcentuales "
+                "Con un único día registrado se muestra el precio actual. Las variaciones porcentuales (% subida) "
                 "se calcularán automáticamente a partir del segundo snapshot diario."
             )
 
-        # Ordenar DataFrame
+        # ORDENACIÓN DEL RANKING
         if has_variation:
-            if sel_orden == "🚀 Que más suben en %":
-                df_display = df_view.sort_values(by="pct_change", ascending=False)
-            elif sel_orden == "💶 Que más suben en €":
-                df_display = df_view.sort_values(by="diff_value", ascending=False)
-            elif sel_orden == "🔻 Que más bajan en %":
-                df_display = df_view.sort_values(by="pct_change", ascending=True)
-            elif sel_orden == "💎 Mayor valor de mercado":
-                df_display = df_view.sort_values(by="market_value", ascending=False)
+            if sel_orden == "🚀 Mayor subida (%)":
+                df_sorted = df_view.sort_values(by="pct_change", ascending=False)
+            elif sel_orden == "💶 Mayor subida (€)":
+                df_sorted = df_view.sort_values(by="diff_value", ascending=False)
+            elif sel_orden == "💎 Mayor valor (€)":
+                df_sorted = df_view.sort_values(by="market_value", ascending=False)
+            elif sel_orden == "🔻 Mayor caída (%)":
+                df_sorted = df_view.sort_values(by="pct_change", ascending=True)
             elif sel_orden == "🏆 Más puntos":
-                df_display = df_view.sort_values(by="points", ascending=False)
+                df_sorted = df_view.sort_values(by="points", ascending=False)
+            elif sel_orden == "📈 Mejor media":
+                df_sorted = df_view.sort_values(by="average_points", ascending=False)
             else:
-                df_display = df_view.sort_values(by="market_value", ascending=False)
+                df_sorted = df_view.sort_values(by="name", ascending=True)
         else:
-            if sel_orden == "💎 Mayor valor de mercado":
-                df_display = df_view.sort_values(by="market_value", ascending=False)
+            if sel_orden == "💎 Mayor valor (€)":
+                df_sorted = df_view.sort_values(by="market_value", ascending=False)
             elif sel_orden == "🏆 Más puntos":
-                df_display = df_view.sort_values(by="points", ascending=False)
+                df_sorted = df_view.sort_values(by="points", ascending=False)
+            elif sel_orden == "📈 Mejor media":
+                df_sorted = df_view.sort_values(by="average_points", ascending=False)
             else:
-                df_display = df_view.sort_values(by="name", ascending=True)
+                df_sorted = df_view.sort_values(by="name", ascending=True)
+
+        # Generar columna de ranking 1, 2, 3, 4, 5...
+        df_display = df_sorted.reset_index(drop=True)
+        df_display["rank"] = df_display.index + 1
 
         # Columnas a mostrar
-        display_cols = ["name", "nickname", "team_name", "position", "market_value", "points", "average_points", "estado_mercado"]
+        display_cols = ["rank", "foto", "name", "nickname", "team_name", "position", "market_value", "points", "average_points", "estado_mercado"]
         if has_variation:
-            display_cols = ["name", "nickname", "team_name", "position", "market_value", "pct_change", "diff_value", "points", "average_points", "estado_mercado"]
+            display_cols = ["rank", "foto", "name", "nickname", "team_name", "position", "market_value", "pct_change", "diff_value", "points", "average_points", "estado_mercado"]
 
         col_config = {
+            "rank": st.column_config.NumberColumn("#", help="Posición en el ranking", format="%d", width="small"),
+            "foto": st.column_config.ImageColumn("Foto", help="Foto del futbolista", width="small"),
             "name": st.column_config.TextColumn("Nombre"),
             "nickname": st.column_config.TextColumn("Apodo"),
             "team_name": st.column_config.TextColumn("Equipo"),
@@ -725,11 +750,13 @@ def main():
             col_config["pct_change"] = st.column_config.NumberColumn("Subida (%)", format="%+.2f %%")
             col_config["diff_value"] = st.column_config.NumberColumn("Variación (€)", format="%+d €")
 
+        st.caption(f"📋 Mostrando **{len(df_display)}** futbolistas ordenados por **{sel_orden}**")
         st.dataframe(
             df_display[display_cols],
             column_config=col_config,
             use_container_width=True,
             hide_index=True,
+            height=600,
         )
 
     # =========================================================================
@@ -751,7 +778,7 @@ def main():
 
             col_pcard, col_pchart = st.columns([1, 2])
             with col_pcard:
-                img_url = p_info.get("image_url") or "https://assets-fantasy.llt-services.com/players/no-player/no-player-sq_256.png"
+                img_url = p_info.get("image_url") or NO_PLAYER_IMG
                 pos_cls = get_position_class(p_info.get("position"))
                 is_on_sale = str(selected_player_id) in market_player_ids
                 mkt_badge_html = '<span class="badge-market-active" style="margin-left: 8px;">🟢 EN VENTA EN TU LIGA</span>' if is_on_sale else ""
@@ -861,6 +888,7 @@ def main():
                 else None,
                 axis=1,
             )
+            df_min["foto"] = df_min["image_url"].fillna(NO_PLAYER_IMG)
 
             if sel_position != "Todas":
                 df_min = df_min[df_min["position"] == sel_position]
@@ -873,11 +901,16 @@ def main():
             if solo_titulares:
                 df_min = df_min[df_min["pct_minutos"] > 60]
 
+            df_min_display = df_min.sort_values("pts_por_millon", ascending=False).reset_index(drop=True)
+            df_min_display["rank"] = df_min_display.index + 1
+
             st.dataframe(
-                df_min[
-                    ["name", "team_name", "position", "market_value", "minutos", "pct_minutos", "puntos", "goles", "pts_por_millon"]
-                ].sort_values("pts_por_millon", ascending=False),
+                df_min_display[
+                    ["rank", "foto", "name", "team_name", "position", "market_value", "minutos", "pct_minutos", "puntos", "goles", "pts_por_millon"]
+                ],
                 column_config={
+                    "rank": st.column_config.NumberColumn("#", format="%d", width="small"),
+                    "foto": st.column_config.ImageColumn("Foto", width="small"),
                     "name": st.column_config.TextColumn("Jugador"),
                     "team_name": st.column_config.TextColumn("Equipo"),
                     "position": st.column_config.TextColumn("Posición"),
