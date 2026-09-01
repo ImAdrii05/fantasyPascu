@@ -1,8 +1,8 @@
 """Dashboard interactivo para análisis de mercado de LaLiga Fantasy en Streamlit.
 
 Diseño visual premium estilo Fantasy: Glassmorphism, Dark UI, fotos de futbolistas,
-ranking 1, 2, 3, 4, 5..., badges de posición, gráficos interactivos con Plotly y
-seguimiento en tiempo real del mercado.
+ranking 1, 2, 3, 4, 5..., formato de dinero compacto (900k, 130M, etc.), badges de posición,
+gráficos interactivos con Plotly y seguimiento en tiempo real del mercado.
 """
 
 from datetime import date, datetime
@@ -347,13 +347,43 @@ def get_position_class(pos_name: str | None) -> str:
     return "pos-badge pos-ent"
 
 
-def format_money(val: int | float | None) -> str:
-    """Formatea cantidades monetarias de forma limpia."""
+def format_money(val: int | float | None, with_sign: bool = False) -> str:
+    """Formatea cantidades monetarias en formato compacto estándar Fantasy: 900k, 130M, +1.5M, etc."""
     if val is None or pd.isna(val):
         return "—"
-    if abs(val) >= 1_000_000:
-        return f"{val/1_000_000:.2f} M€"
-    return f"{val:,.0f} €"
+    try:
+        val = float(val)
+    except (ValueError, TypeError):
+        return str(val)
+
+    sign = "+" if with_sign and val > 0 else ""
+    abs_val = abs(val)
+
+    if abs_val >= 1_000_000_000:
+        num = val / 1_000_000_000
+        formatted = f"{num:.1f}B" if not f"{num:.1f}".endswith(".0") else f"{num:.0f}B"
+    elif abs_val >= 1_000_000:
+        num = val / 1_000_000
+        if abs_val >= 100_000_000 or abs(num - round(num)) < 1e-4:
+            formatted = f"{round(num):.0f}M"
+        elif abs(num * 10 - round(num * 10)) < 1e-3:
+            formatted = f"{num:.1f}M"
+        else:
+            formatted = f"{num:.2f}M"
+    elif abs_val >= 1_000:
+        num = val / 1_000
+        if abs_val >= 100_000 or abs(num - round(num)) < 1e-4:
+            formatted = f"{round(num):.0f}k"
+        elif abs(num * 10 - round(num * 10)) < 1e-3:
+            formatted = f"{num:.1f}k"
+        else:
+            formatted = f"{num:.0f}k"
+    else:
+        formatted = f"{round(val):.0f}€"
+
+    if with_sign and not formatted.startswith("-") and not formatted.startswith("+"):
+        return f"{sign}{formatted}"
+    return formatted
 
 
 def main():
@@ -458,12 +488,13 @@ def main():
     df_latest = df_daily[df_daily["snapshot_date"].dt.date == latest_date].copy()
     max_market_val = int(df_latest["market_value"].dropna().max()) if not df_latest.empty else 100_000_000
     rango_precio = st.sidebar.slider(
-        "Rango de Valor (€)",
+        "Rango de Valor",
         min_value=0,
         max_value=max_market_val,
         value=(0, max_market_val),
         step=500_000,
         format="%d €",
+        help=f"Filtra jugadores con valor hasta {format_money(max_market_val)}",
     )
 
     # Búsqueda por texto
@@ -531,7 +562,7 @@ def main():
     )
 
     # =========================================================================
-    # PESTAÑA 1: MERCADO Y TENDENCIAS (MUY PRÁCTICO + FOTOS + RANKING)
+    # PESTAÑA 1: MERCADO Y TENDENCIAS (MUY PRÁCTICO + FOTOS + RANKING + DINERO COMPACTO)
     # =========================================================================
     with tab_market:
         col_ctrl1, col_ctrl2 = st.columns([1.2, 2.8])
@@ -567,7 +598,7 @@ def main():
                 ]
             sel_orden = st.radio("Ordenar ranking por:", opciones_orden, horizontal=True)
 
-        # KPIs superiores estilizados
+        # KPIs superiores estilizados con formato compacto
         kpi_c1, kpi_c2, kpi_c3, kpi_c4 = st.columns(4)
         total_mkt_active = len(df_view[df_view["en_mercado"]])
 
@@ -583,7 +614,7 @@ def main():
                     <div class="stat-card">
                         <div class="stat-card-title">🚀 Mayor Subida (%)</div>
                         <div class="stat-card-value" style="color: #34d399;">{top_pct_up['name']}</div>
-                        <div class="stat-card-delta pill-up">+{top_pct_up['pct_change']:.2f} % (+{top_pct_up['diff_value']:,.0f} €)</div>
+                        <div class="stat-card-delta pill-up">+{top_pct_up['pct_change']:.2f} % ({format_money(top_pct_up['diff_value'], with_sign=True)})</div>
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -593,7 +624,7 @@ def main():
                     <div class="stat-card">
                         <div class="stat-card-title">💶 Mayor Subida (€)</div>
                         <div class="stat-card-value" style="color: #60a5fa;">{top_eur_up['name']}</div>
-                        <div class="stat-card-delta pill-up">+{top_eur_up['diff_value']:,.0f} € (+{top_eur_up['pct_change']:.2f} %)</div>
+                        <div class="stat-card-delta pill-up">{format_money(top_eur_up['diff_value'], with_sign=True)} (+{top_eur_up['pct_change']:.2f} %)</div>
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -603,7 +634,7 @@ def main():
                     <div class="stat-card">
                         <div class="stat-card-title">🔻 Mayor Caída (%)</div>
                         <div class="stat-card-value" style="color: #f87171;">{top_pct_down['name']}</div>
-                        <div class="stat-card-delta pill-down">{top_pct_down['pct_change']:.2f} % ({top_pct_down['diff_value']:,.0f} €)</div>
+                        <div class="stat-card-delta pill-down">{top_pct_down['pct_change']:.2f} % ({format_money(top_pct_down['diff_value'], with_sign=True)})</div>
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -613,7 +644,7 @@ def main():
                     <div class="stat-card">
                         <div class="stat-card-title">🎯 En Mercado Activo</div>
                         <div class="stat-card-value" style="color: #facc15;">{total_mkt_active} <span style="font-size: 0.9rem; font-weight: 500; color: #94a3b8;">jugadores</span></div>
-                        <div class="stat-card-delta" style="color: #94a3b8;">A la venta en tu liga</div>
+                        <div class="stat-card-delta" style="color: #94a3b8;">Disponibles para puja</div>
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -725,14 +756,17 @@ def main():
             else:
                 df_sorted = df_view.sort_values(by="name", ascending=True)
 
-        # Generar columna de ranking 1, 2, 3, 4, 5...
+        # Generar columna de ranking 1, 2, 3, 4, 5... y formato compacto de dinero (900k, 130M...)
         df_display = df_sorted.reset_index(drop=True)
         df_display["rank"] = df_display.index + 1
+        df_display["valor_fmt"] = df_display["market_value"].apply(lambda v: format_money(v))
+        if has_variation:
+            df_display["diff_fmt"] = df_display["diff_value"].apply(lambda v: format_money(v, with_sign=True))
 
         # Columnas a mostrar
-        display_cols = ["rank", "foto", "name", "nickname", "team_name", "position", "market_value", "points", "average_points", "estado_mercado"]
+        display_cols = ["rank", "foto", "name", "nickname", "team_name", "position", "valor_fmt", "points", "average_points", "estado_mercado"]
         if has_variation:
-            display_cols = ["rank", "foto", "name", "nickname", "team_name", "position", "market_value", "pct_change", "diff_value", "points", "average_points", "estado_mercado"]
+            display_cols = ["rank", "foto", "name", "nickname", "team_name", "position", "valor_fmt", "pct_change", "diff_fmt", "points", "average_points", "estado_mercado"]
 
         col_config = {
             "rank": st.column_config.NumberColumn("#", help="Posición en el ranking", format="%d", width="small"),
@@ -741,14 +775,13 @@ def main():
             "nickname": st.column_config.TextColumn("Apodo"),
             "team_name": st.column_config.TextColumn("Equipo"),
             "position": st.column_config.TextColumn("Posición"),
-            "market_value": st.column_config.NumberColumn("Valor (€)", format="%d €"),
+            "valor_fmt": st.column_config.TextColumn("Valor", help="Valor de mercado en formato compacto (k/M)"),
+            "pct_change": st.column_config.NumberColumn("Subida (%)", format="%+.2f %%"),
+            "diff_fmt": st.column_config.TextColumn("Variación (€)", help="Variación en dinero compacto (k/M)"),
             "points": st.column_config.NumberColumn("Puntos"),
             "average_points": st.column_config.NumberColumn("Media", format="%.2f"),
             "estado_mercado": st.column_config.TextColumn("Mercado Liga"),
         }
-        if has_variation:
-            col_config["pct_change"] = st.column_config.NumberColumn("Subida (%)", format="%+.2f %%")
-            col_config["diff_value"] = st.column_config.NumberColumn("Variación (€)", format="%+d €")
 
         st.caption(f"📋 Mostrando **{len(df_display)}** futbolistas ordenados por **{sel_orden}**")
         st.dataframe(
@@ -834,7 +867,7 @@ def main():
                         paper_bgcolor="rgba(0,0,0,0)",
                         plot_bgcolor="rgba(30, 41, 59, 0.4)",
                         margin=dict(l=20, r=20, t=30, b=20),
-                        yaxis=dict(title="Valor (€)", tickformat="$,d"),
+                        yaxis=dict(title="Valor", tickformat="$,d"),
                         xaxis=dict(title="Fecha", showgrid=False),
                         hovermode="x unified",
                     )
@@ -889,6 +922,7 @@ def main():
                 axis=1,
             )
             df_min["foto"] = df_min["image_url"].fillna(NO_PLAYER_IMG)
+            df_min["valor_fmt"] = df_min["market_value"].apply(lambda v: format_money(v))
 
             if sel_position != "Todas":
                 df_min = df_min[df_min["position"] == sel_position]
@@ -906,7 +940,7 @@ def main():
 
             st.dataframe(
                 df_min_display[
-                    ["rank", "foto", "name", "team_name", "position", "market_value", "minutos", "pct_minutos", "puntos", "goles", "pts_por_millon"]
+                    ["rank", "foto", "name", "team_name", "position", "valor_fmt", "minutos", "pct_minutos", "puntos", "goles", "pts_por_millon"]
                 ],
                 column_config={
                     "rank": st.column_config.NumberColumn("#", format="%d", width="small"),
@@ -914,7 +948,7 @@ def main():
                     "name": st.column_config.TextColumn("Jugador"),
                     "team_name": st.column_config.TextColumn("Equipo"),
                     "position": st.column_config.TextColumn("Posición"),
-                    "market_value": st.column_config.NumberColumn("Valor (€)", format="%d €"),
+                    "valor_fmt": st.column_config.TextColumn("Valor"),
                     "minutos": st.column_config.NumberColumn("Minutos"),
                     "pct_minutos": st.column_config.ProgressColumn(
                         "% Minutos", min_value=0, max_value=100, format="%.0f%%"
@@ -928,7 +962,7 @@ def main():
             )
 
     # =========================================================================
-    # PESTAÑA 4: LIGA PRIVADA Y CAJA
+    # PESTAÑA 4: LIGA PRIVADA Y CAJA (FORMATO COMPACTO)
     # =========================================================================
     with tab_league:
         st.subheader("🏆 Clasificación y Estimación de Caja de Rivales")
@@ -939,7 +973,7 @@ def main():
             latest_league_date = df_standings["snapshot_date"].max()
             df_cur_standings = df_standings[df_standings["snapshot_date"] == latest_league_date].copy()
 
-            # Podium para los 3 primeros
+            # Podium para los 3 primeros con formato compacto
             if len(df_cur_standings) >= 3:
                 top3 = df_cur_standings.sort_values("position").head(3).to_dict("records")
                 c_p2, c_p1, c_p3 = st.columns([1, 1.2, 1])
@@ -1001,19 +1035,25 @@ def main():
                     right_on="team_id",
                     how="left",
                 )
+
+                df_tabla_caja["team_value_fmt"] = df_tabla_caja["team_value"].apply(lambda v: format_money(v))
+                df_tabla_caja["cash_estimate_fmt"] = df_tabla_caja["cash_estimate"].apply(lambda v: format_money(v))
+                df_tabla_caja["net_transfer_flow_fmt"] = df_tabla_caja["net_transfer_flow"].apply(lambda v: format_money(v, with_sign=True))
+                df_tabla_caja["prize_flow_fmt"] = df_tabla_caja["prize_flow"].apply(lambda v: format_money(v, with_sign=True))
+
                 st.dataframe(
                     df_tabla_caja[
-                        ["position", "team_name", "manager_name", "points", "team_value", "cash_estimate", "net_transfer_flow", "prize_flow"]
+                        ["position", "team_name", "manager_name", "points", "team_value_fmt", "cash_estimate_fmt", "net_transfer_flow_fmt", "prize_flow_fmt"]
                     ].sort_values("position"),
                     column_config={
                         "position": st.column_config.NumberColumn("Posición"),
                         "team_name": st.column_config.TextColumn("Equipo"),
                         "manager_name": st.column_config.TextColumn("Mánager"),
                         "points": st.column_config.NumberColumn("Puntos"),
-                        "team_value": st.column_config.NumberColumn("Valor Plantilla (€)", format="%d €"),
-                        "cash_estimate": st.column_config.NumberColumn("Caja Estimada (€)", format="%d €"),
-                        "net_transfer_flow": st.column_config.NumberColumn("Flujo Fichajes (€)", format="%+d €"),
-                        "prize_flow": st.column_config.NumberColumn("Premios (€)", format="%+d €"),
+                        "team_value_fmt": st.column_config.TextColumn("Valor Plantilla"),
+                        "cash_estimate_fmt": st.column_config.TextColumn("Caja Estimada"),
+                        "net_transfer_flow_fmt": st.column_config.TextColumn("Flujo Fichajes"),
+                        "prize_flow_fmt": st.column_config.TextColumn("Premios"),
                     },
                     use_container_width=True,
                     hide_index=True,
@@ -1021,12 +1061,15 @@ def main():
 
         if not df_movements.empty:
             st.markdown("#### 🔄 Últimos Movimientos de Mercado")
+            df_movements_display = df_movements.copy()
+            df_movements_display["amount_fmt"] = df_movements_display["amount"].apply(lambda v: format_money(v))
+
             st.dataframe(
-                df_movements[["movement_date", "player_name", "amount", "movement_type"]],
+                df_movements_display[["movement_date", "player_name", "amount_fmt", "movement_type"]],
                 column_config={
                     "movement_date": st.column_config.DatetimeColumn("Fecha"),
                     "player_name": st.column_config.TextColumn("Jugador"),
-                    "amount": st.column_config.NumberColumn("Importe (€)", format="%d €"),
+                    "amount_fmt": st.column_config.TextColumn("Importe"),
                     "movement_type": st.column_config.TextColumn("Tipo"),
                 },
                 use_container_width=True,
