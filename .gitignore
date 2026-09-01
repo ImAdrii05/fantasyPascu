@@ -1,0 +1,26 @@
+# Entornos y dependencias
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Secretos y credenciales (NUNCA commitear)
+secrets/
+*.token.json
+.env
+.streamlit/secrets.toml
+
+# IDE y sistema
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

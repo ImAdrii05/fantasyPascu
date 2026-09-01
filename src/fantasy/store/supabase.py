@@ -1,0 +1,224 @@
+"""Operaciones idempotentes de persistencia y upsert en Supabase."""
+
+from datetime import date, datetime
+import logging
+from typing import Any
+from supabase import create_client, Client
+
+from fantasy.api.models import Team, Player, PlayerGameweekStat, LeagueStanding, LeagueMovement
+from fantasy import config
+
+logger = logging.getLogger(__name__)
+
+
+def chunk_list(items: list[Any], chunk_size: int = 400):
+    """Generador que divide una lista en bloques para evitar exceder límites de payload."""
+    for i in range(0, len(items), chunk_size):
+        yield items[i : i + chunk_size]
+
+
+class SupabaseStore:
+    """Capa de acceso a datos para Supabase/Postgres."""
+
+    def __init__(self, client: Client | None = None):
+        if client is not None:
+            self.client = client
+        else:
+            config.validate_supabase_config()
+            self.client = create_client(config.SUPABASE_URL, config.SUPABASE_SERVICE_KEY)
+
+    def save_raw_snapshot(self, endpoint: str, payload: Any, snapshot_date: str | date | None = None) -> None:
+        """Guarda el JSON crudo de la respuesta en la tabla raw_snapshots."""
+        if snapshot_date is None:
+            snapshot_date = date.today().isoformat()
+        elif isinstance(snapshot_date, date):
+            snapshot_date = snapshot_date.isoformat()
+
+        row = {
+            "snapshot_date": snapshot_date,
+            "endpoint": endpoint,
+            "payload": payload,
+            "fetched_at": datetime.utcnow().isoformat(),
+        }
+        try:
+            self.client.table("raw_snapshots").insert(row).execute()
+            logger.debug(f"Raw snapshot guardado para endpoint '{endpoint}' en fecha {snapshot_date}")
+        except Exception as e:
+            logger.error(f"Error al guardar raw snapshot para '{endpoint}': {e}")
+            raise
+
+    def upsert_teams(self, teams: list[Team]) -> int:
+        """Realiza un upsert de los equipos maestros."""
+        if not teams:
+            return 0
+        rows = [
+            {
+                "id": t.id,
+                "name": t.name,
+                "short_name": t.short_name,
+                "slug": t.slug,
+                "badge_url": t.badge_url,
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+            for t in teams
+            if t.id
+        ]
+        count = 0
+        for chunk in chunk_list(rows):
+            self.client.table("teams").upsert(chunk, on_conflict="id").execute()
+            count += len(chunk)
+        logger.info(f"Upsert de {count} equipos en Supabase.")
+        return count
+
+    def upsert_players(self, players: list[Player]) -> int:
+        """Realiza un upsert de la información dimensional de los jugadores."""
+        if not players:
+            return 0
+        rows = [
+            {
+                "id": p.id,
+                "name": p.name,
+                "nickname": p.nickname,
+                "slug": p.slug,
+                "position": p.position,
+                "position_id": p.position_id,
+                "team_id": p.team_id,
+                "status": p.status,
+                "image_url": p.image_url,
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+            for p in players
+            if p.id
+        ]
+        count = 0
+        for chunk in chunk_list(rows):
+            self.client.table("players").upsert(chunk, on_conflict="id").execute()
+            count += len(chunk)
+        logger.info(f"Upsert de {count} registros en tabla players.")
+        return count
+
+    def upsert_player_daily(self, players: list[Player], snapshot_date: str | date | None = None) -> int:
+        """Guarda la foto diaria de valor de mercado y puntos de cada jugador (Idempotente)."""
+        if not players:
+            return 0
+        if snapshot_date is None:
+            snapshot_date = date.today().isoformat()
+        elif isinstance(snapshot_date, date):
+            snapshot_date = snapshot_date.isoformat()
+
+        rows = [
+            {
+                "snapshot_date": snapshot_date,
+                "player_id": p.id,
+                "market_value": p.market_value,
+                "points": p.points,
+                "average_points": p.average_points,
+                "played_matches": p.played_matches,
+                "minutes_played": p.minutes_played,
+                "fetched_at": datetime.utcnow().isoformat(),
+            }
+            for p in players
+            if p.id
+        ]
+        count = 0
+        for chunk in chunk_list(rows):
+            self.client.table("player_daily").upsert(chunk, on_conflict="snapshot_date,player_id").execute()
+            count += len(chunk)
+        logger.info(f"Upsert de {count} registros diarios en player_daily para fecha {snapshot_date}.")
+        return count
+
+    def upsert_player_gameweek_stats(self, stats: list[PlayerGameweekStat]) -> int:
+        """Guarda las estadísticas por jornada de cada jugador."""
+        if not stats:
+            return 0
+        rows = [
+            {
+                "player_id": s.player_id,
+                "gameweek": s.gameweek,
+                "points": s.points,
+                "minutes": s.minutes,
+                "goals": s.goals,
+                "assists": s.assists,
+                "yellow_cards": s.yellow_cards,
+                "red_cards": s.red_cards,
+                "fetched_at": datetime.utcnow().isoformat(),
+            }
+            for s in stats
+            if s.player_id and s.gameweek
+        ]
+        count = 0
+        for chunk in chunk_list(rows):
+            self.client.table("player_gameweek_stats").upsert(chunk, on_conflict="player_id,gameweek").execute()
+            count += len(chunk)
+        logger.info(f"Upsert de {count} registros en player_gameweek_stats.")
+        return count
+
+    def upsert_league_standings(self, standings: list[LeagueStanding], snapshot_date: str | date | None = None) -> int:
+        """Guarda la clasificación de la liga privada en la fecha actual (Idempotente)."""
+        if not standings:
+            return 0
+        if snapshot_date is None:
+            snapshot_date = date.today().isoformat()
+        elif isinstance(snapshot_date, date):
+            snapshot_date = snapshot_date.isoformat()
+
+        rows = [
+            {
+                "snapshot_date": snapshot_date,
+                "league_team_id": s.league_team_id,
+                "league_id": s.league_id,
+                "team_name": s.team_name,
+                "manager_name": s.manager_name,
+                "team_value": s.team_value,
+                "points": s.points,
+                "position": s.position,
+                "fetched_at": datetime.utcnow().isoformat(),
+            }
+            for s in standings
+            if s.league_team_id
+        ]
+        count = 0
+        for chunk in chunk_list(rows):
+            self.client.table("league_standings").upsert(chunk, on_conflict="snapshot_date,league_team_id").execute()
+            count += len(chunk)
+        logger.info(f"Upsert de {count} registros en league_standings para fecha {snapshot_date}.")
+        return count
+
+    def upsert_league_movements(self, movements: list[LeagueMovement]) -> int:
+        """Guarda los movimientos de mercado y actividad de la liga."""
+        if not movements:
+            return 0
+        rows = [
+            {
+                "movement_id": m.movement_id,
+                "league_id": m.league_id,
+                "player_id": m.player_id,
+                "player_name": m.player_name,
+                "from_team_id": m.from_team_id,
+                "to_team_id": m.to_team_id,
+                "amount": m.amount,
+                "movement_type": str(m.movement_type) if m.movement_type is not None else None,
+                "movement_date": m.movement_date,
+                "raw_payload": m.raw_payload,
+                "fetched_at": datetime.utcnow().isoformat(),
+            }
+            for m in movements
+            if m.movement_id
+        ]
+        count = 0
+        for chunk in chunk_list(rows):
+            self.client.table("league_movements").upsert(chunk, on_conflict="movement_id").execute()
+            count += len(chunk)
+        logger.info(f"Upsert de {count} movimientos en league_movements.")
+        return count
+
+
+_default_supabase_store: SupabaseStore | None = None
+
+
+def get_supabase_store() -> SupabaseStore:
+    """Devuelve la instancia singleton de la capa de persistencia Supabase."""
+    global _default_supabase_store
+    if _default_supabase_store is None:
+        _default_supabase_store = SupabaseStore()
+    return _default_supabase_store

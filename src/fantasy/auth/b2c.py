@@ -1,0 +1,107 @@
+"""Cliente directo para el endpoint de tokens de Azure AD B2C."""
+
+import json
+import requests
+
+from fantasy.auth.errors import AuthBackendChanged, AuthExpired
+from fantasy.auth.tokens import TokenSet
+from fantasy import config
+
+
+def get_token_endpoint() -> str:
+    """Construye la URL del endpoint de token de Azure B2C según la configuración."""
+    tenant = config.B2C_TENANT
+    policy = config.B2C_POLICY
+
+    if tenant.startswith("http://") or tenant.startswith("https://"):
+        base = tenant.rstrip("/")
+        return f"{base}?p={policy}" if "?p=" not in base else base
+    elif "." in tenant:
+        # Dominio personalizado (ej. login.laliga.es)
+        return f"https://{tenant}/laligadspprob2c.onmicrosoft.com/oauth2/v2.0/token?p={policy}"
+    else:
+        # Tenant estándar B2C
+        return f"https://{tenant}.b2clogin.com/{tenant}.onmicrosoft.com/{policy}/oauth2/v2.0/token"
+
+
+def refresh_access_token(
+    refresh_token: str,
+    client_id: str | None = None,
+    scope: str | None = None,
+    timeout: int = 15,
+) -> TokenSet:
+    """Envía una petición a Azure B2C para refrescar el conjunto de tokens.
+
+    Args:
+        refresh_token: El refresh token emitido previamente.
+        client_id: Opcional, identificador de cliente OAuth2 (usa config por defecto).
+        scope: Opcional, scopes solicitados (usa config por defecto).
+        timeout: Timeout en segundos para la llamada HTTP.
+
+    Returns:
+        TokenSet con los tokens actualizados.
+
+    Raises:
+        AuthExpired: Si el refresh_token es inválido, caducó o fue revocado (HTTP 400/401).
+        AuthBackendChanged: Si la respuesta no es JSON o no incluye tokens válidos.
+    """
+    if not refresh_token:
+        raise AuthExpired("No se proporcionó ningún refresh_token.")
+
+    url = get_token_endpoint()
+    used_client_id = client_id or config.B2C_CLIENT_ID
+    used_scope = scope or config.B2C_SCOPE
+
+    payload = {
+        "grant_type": "refresh_token",
+        "client_id": used_client_id,
+        "scope": used_scope,
+        "refresh_token": refresh_token,
+    }
+
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    }
+
+    try:
+        response = requests.post(url, data=payload, headers=headers, timeout=timeout)
+    except requests.RequestException as e:
+        raise AuthBackendChanged(f"Error de conexión al endpoint de B2C: {e}") from e
+
+    # Manejo de expiración / revocación de token
+    if response.status_code in (400, 401):
+        try:
+            err_data = response.json()
+            err_desc = err_data.get("error_description") or err_data.get("error") or response.text
+        except Exception:
+            err_desc = response.text
+        raise AuthExpired(f"HTTP {response.status_code}: {err_desc}")
+
+    # Respuestas de error HTTP 404, 500, etc.
+    if not response.ok:
+        raise AuthBackendChanged(response.text, status_code=response.status_code)
+
+    # Validar que la respuesta sea JSON
+    try:
+        data = response.json()
+    except Exception as e:
+        raise AuthBackendChanged(
+            f"La respuesta no es JSON válido (error: {e}). Contenido: {response.text}",
+            status_code=response.status_code,
+        ) from e
+
+    if not isinstance(data, dict):
+        raise AuthBackendChanged(f"Respuesta inesperada (no es un objeto JSON): {data}", status_code=response.status_code)
+
+    # Validar que contenga access_token o id_token
+    token_val = data.get("access_token") or data.get("id_token")
+    if not token_val:
+        raise AuthBackendChanged(
+            f"El JSON de respuesta no contiene access_token ni id_token. Claves recibidas: {list(data.keys())}",
+            status_code=response.status_code,
+        )
+
+    # Guardar el client_id con el que se emitió
+    data.setdefault("client_id", used_client_id)
+    return TokenSet.from_dict(data)
