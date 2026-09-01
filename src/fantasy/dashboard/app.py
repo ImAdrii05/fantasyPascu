@@ -2,7 +2,7 @@
 
 Diseño visual premium estilo Fantasy: Glassmorphism, Dark UI, fotos de futbolistas,
 ranking 1..N, formato de dinero compacto (900k, 130M, etc.), badges de posición,
-gráficos interactivos con Plotly y seguimiento en tiempo real del mercado.
+gráficos interactivos con Plotly de rendimiento histórico por jornada y cotización de mercado.
 """
 
 from datetime import date, datetime
@@ -10,6 +10,7 @@ import textwrap
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from supabase import create_client
 
 from fantasy import config
@@ -24,9 +25,11 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+
 def render_html(html_str: str) -> None:
     """Renderiza HTML nativo sin que Markdown lo confunda con bloques de código indentados."""
     st.html(textwrap.dedent(html_str).strip())
+
 
 # =============================================================================
 # ESTILOS CSS PERSONALIZADOS (THEME FANTASY DARK & NEON)
@@ -311,11 +314,11 @@ def load_gameweek_stats() -> pd.DataFrame:
     client = get_supabase_client()
     rows = fetch_all(
         lambda: client.table("player_gameweek_stats")
-        .select("player_id, gameweek, points, minutes, goals, assists, yellow_cards, red_cards, saves")
+        .select("player_id, gameweek, points, minutes, goals, assists, yellow_cards, red_cards, saves, goals_conceded")
         .order("player_id")
         .order("gameweek")
     )
-    return _df(rows, ["player_id", "gameweek", "points", "minutes", "goals", "assists", "yellow_cards", "red_cards", "saves"])
+    return _df(rows, ["player_id", "gameweek", "points", "minutes", "goals", "assists", "yellow_cards", "red_cards", "saves", "goals_conceded"])
 
 
 @st.cache_data(ttl=300)
@@ -486,6 +489,7 @@ def main():
             df_players, df_daily, df_teams = load_market_data()
             df_league_market = load_league_market()
             df_standings, df_movements = load_league_data(df_players)
+            df_gw = load_gameweek_stats()
     except Exception as e:
         st.error(f"❌ Error al conectar con Supabase: {e}")
         st.stop()
@@ -637,7 +641,7 @@ def main():
     tab_market, tab_evolution, tab_minutes, tab_league = st.tabs(
         [
             "💰 Mercado & Tendencias",
-            "📈 Evolución de Precio",
+            "📈 Evolución y Rendimiento",
             "⏱️ Minutos y Titularidad",
             "🏆 Liga Privada & Caja",
         ]
@@ -874,30 +878,39 @@ def main():
         )
 
     # =========================================================================
-    # PESTAÑA 2: EVOLUCIÓN TEMPORAL
+    # PESTAÑA 2: EVOLUCIÓN Y RENDIMIENTO HISTÓRICO (GRÁFICAS INTERACTIVAS)
     # =========================================================================
     with tab_evolution:
-        st.subheader("📈 Evolución Histórica de Valor de Mercado")
+        st.subheader("📈 Rendimiento Histórico por Jornada y Cotización")
 
         player_options = df_players.set_index("id")["name"].to_dict()
         selected_player_id = st.selectbox(
-            "Selecciona un jugador:",
+            "Selecciona un jugador para analizar:",
             options=list(player_options.keys()),
             format_func=lambda x: f"{player_options[x]} ({df_players[df_players['id'] == x]['team_name'].values[0]})",
         )
 
         if selected_player_id:
-            df_p_history = df_daily[df_daily["player_id"] == selected_player_id].sort_values("snapshot_date")
-            p_info = df_players[df_players["id"] == selected_player_id].iloc[0]
+            df_p_history = df_daily[df_daily["player_id"] == str(selected_player_id)].sort_values("snapshot_date")
+            df_p_gw = df_gw[df_gw["player_id"] == str(selected_player_id)].sort_values("gameweek")
+            p_info = df_players[df_players["id"] == str(selected_player_id)].iloc[0]
+
+            img_url = p_info.get("image_url") or NO_PLAYER_IMG
+            pos_cls = get_position_class(p_info.get("position"))
+            is_on_sale = str(selected_player_id) in market_player_ids
+            mkt_badge_html = '<span class="badge-market-active" style="margin-left: 8px;">🟢 EN VENTA EN TU LIGA</span>' if is_on_sale else ""
+            last_val = df_p_history.iloc[-1]["market_value"] if not df_p_history.empty else 0
+
+            # Métricas agregadas
+            tot_pts = int(df_p_gw["points"].sum()) if not df_p_gw.empty else 0
+            avg_pts = float(df_p_gw["points"].mean()) if not df_p_gw.empty else 0.0
+            tot_mins = int(df_p_gw["minutes"].sum()) if not df_p_gw.empty else 0
+            tot_goals = int(df_p_gw["goals"].sum()) if not df_p_gw.empty else 0
+            tot_saves = int(df_p_gw["saves"].sum()) if not df_p_gw.empty else 0
 
             col_pcard, col_pchart = st.columns([1, 2])
-            with col_pcard:
-                img_url = p_info.get("image_url") or NO_PLAYER_IMG
-                pos_cls = get_position_class(p_info.get("position"))
-                is_on_sale = str(selected_player_id) in market_player_ids
-                mkt_badge_html = '<span class="badge-market-active" style="margin-left: 8px;">🟢 EN VENTA EN TU LIGA</span>' if is_on_sale else ""
-                last_val = df_p_history.iloc[-1]["market_value"] if not df_p_history.empty else 0
 
+            with col_pcard:
                 render_html(
                     f"""
                     <div class="player-highlight-card">
@@ -913,7 +926,7 @@ def main():
                             </div>
                         </div>
                         <hr style="border: 0; border-top: 1px solid rgba(255, 255, 255, 0.08); margin: 14px 0;" />
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
                             <div>
                                 <div style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase;">Valor Actual</div>
                                 <div style="font-size: 1.25rem; font-weight: 800; color: #ffffff;">{format_money(last_val)}</div>
@@ -922,38 +935,114 @@ def main():
                                 <div style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase;">Estado</div>
                                 <div style="font-size: 1rem; font-weight: 700; color: #34d399;">{p_info.get('status', 'OK')}</div>
                             </div>
+                            <div>
+                                <div style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase;">Puntos Totales</div>
+                                <div style="font-size: 1.15rem; font-weight: 800; color: #f43f5e;">{tot_pts} pts</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase;">Media / Jornada</div>
+                                <div style="font-size: 1.15rem; font-weight: 800; color: #60a5fa;">{avg_pts:.2f}</div>
+                            </div>
                         </div>
                     </div>
                     """
                 )
 
             with col_pchart:
-                if len(df_p_history) > 1:
-                    fig = go.Figure()
-                    fig.add_trace(
-                        go.Scatter(
-                            x=df_p_history["snapshot_date"],
-                            y=df_p_history["market_value"],
-                            mode="lines+markers",
-                            name="Valor de Mercado",
-                            line=dict(color="#f43f5e", width=3, shape="spline"),
-                            marker=dict(size=6, color="#f43f5e", line=dict(color="#ffffff", width=1.5)),
-                            fill="tozeroy",
-                            fillcolor="rgba(244, 63, 94, 0.1)",
-                        )
+                if not df_p_gw.empty:
+                    # GRÁFICA DE RENDIMIENTO POR JORNADA (PUNTOS Y MINUTOS)
+                    fig_gw = make_subplots(specs=[[{"secondary_y": True}]])
+                    fig_gw.add_trace(
+                        go.Bar(
+                            x=[f"J{gw}" for gw in df_p_gw["gameweek"]],
+                            y=df_p_gw["points"],
+                            name="Puntos Fantasy",
+                            marker_color="#f43f5e",
+                            text=df_p_gw["points"],
+                            textposition="outside",
+                            hovertemplate="<b>Jornada %{x}</b><br>Puntos: %{y}<extra></extra>",
+                        ),
+                        secondary_y=False,
                     )
-                    fig.update_layout(
+                    fig_gw.add_trace(
+                        go.Scatter(
+                            x=[f"J{gw}" for gw in df_p_gw["gameweek"]],
+                            y=df_p_gw["minutes"],
+                            name="Minutos Jugados",
+                            mode="lines+markers",
+                            line=dict(color="#38bdf8", width=3),
+                            marker=dict(size=8, color="#38bdf8", line=dict(color="#ffffff", width=1.5)),
+                            hovertemplate="Minutos: %{y}' / 90'<extra></extra>",
+                        ),
+                        secondary_y=True,
+                    )
+                    fig_gw.update_layout(
                         template="plotly_dark",
                         paper_bgcolor="rgba(0,0,0,0)",
                         plot_bgcolor="rgba(30, 41, 59, 0.4)",
                         margin=dict(l=20, r=20, t=30, b=20),
-                        yaxis=dict(title="Valor", tickformat="$,d"),
-                        xaxis=dict(title="Fecha", showgrid=False),
-                        hovermode="x unified",
+                        title="📊 Puntos y Minutos por Jornada",
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    fig_gw.update_yaxes(title_text="Puntos", secondary_y=False)
+                    fig_gw.update_yaxes(title_text="Minutos", range=[0, 105], secondary_y=True)
+                    st.plotly_chart(fig_gw, use_container_width=True)
                 else:
-                    st.info("Solo existe un snapshot para este jugador. El gráfico temporal se trazará automáticamente al acumularse más días.")
+                    st.info("No hay estadísticas por jornada registradas para este futbolista.")
+
+            # Gráfica de cotización de valor de mercado si hay histórico diario
+            st.markdown("#### 💰 Histórico de Cotización de Mercado")
+            if len(df_p_history) > 1:
+                fig_price = go.Figure()
+                fig_price.add_trace(
+                    go.Scatter(
+                        x=df_p_history["snapshot_date"],
+                        y=df_p_history["market_value"],
+                        mode="lines+markers",
+                        name="Valor de Mercado",
+                        line=dict(color="#10b981", width=3, shape="spline"),
+                        marker=dict(size=6, color="#10b981", line=dict(color="#ffffff", width=1.5)),
+                        fill="tozeroy",
+                        fillcolor="rgba(16, 185, 129, 0.1)",
+                        hovertemplate="<b>%{x|%Y-%m-%d}</b><br>Valor: %{y:$,d} €<extra></extra>",
+                    )
+                )
+                fig_price.update_layout(
+                    template="plotly_dark",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(30, 41, 59, 0.4)",
+                    margin=dict(l=20, r=20, t=20, b=20),
+                    yaxis=dict(title="Valor", tickformat="$,d"),
+                    xaxis=dict(title="Fecha", showgrid=False),
+                    hovermode="x unified",
+                )
+                st.plotly_chart(fig_price, use_container_width=True)
+            else:
+                st.caption(
+                    f"📅 **Snapshot del día {latest_date}:** Cotización actual **{format_money(last_val)}**. "
+                    "La curva continua de precio trazará la serie temporal acumulada con cada snapshot diario automático."
+                )
+
+            # Desglose en tabla jornada a jornada
+            if not df_p_gw.empty:
+                st.markdown("#### 📋 Desglose Detallado por Jornada")
+                gw_cols = ["gameweek", "points", "minutes", "goals", "assists", "saves", "goals_conceded", "yellow_cards", "red_cards"]
+                st.dataframe(
+                    df_p_gw[gw_cols],
+                    column_config={
+                        "gameweek": st.column_config.NumberColumn("Jornada", format="J%d"),
+                        "points": st.column_config.NumberColumn("Puntos", format="%d pts"),
+                        "minutes": st.column_config.NumberColumn("Minutos", format="%d'"),
+                        "goals": st.column_config.NumberColumn("Goles"),
+                        "assists": st.column_config.NumberColumn("Asistencias"),
+                        "saves": st.column_config.NumberColumn("Paradas"),
+                        "goals_conceded": st.column_config.NumberColumn("Goles Encajados"),
+                        "yellow_cards": st.column_config.NumberColumn("Amarillas"),
+                        "red_cards": st.column_config.NumberColumn("Rojas"),
+                    },
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
     # =========================================================================
     # PESTAÑA 3: MINUTOS Y TITULARIDAD
@@ -965,7 +1054,6 @@ def main():
             "Para predicciones avanzadas, consulta fuentes especializadas (Futbolfantasy, Jornada Perfecta)."
         )
 
-        df_gw = load_gameweek_stats()
         if df_gw.empty:
             st.info("Todavía no hay estadísticas por jornada registradas. Se rellenan con el snapshot diario.")
         else:
