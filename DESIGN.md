@@ -74,7 +74,7 @@ MED `#00726E`, DEL `#C23400`, ENT `#4A4F54`.
   línea. No es una fila de tarjetas de métrica.
 - `data_table` — tabla densa con cabecera negra fija al hacer scroll, cebra y
   hover. Sustituye a `st.dataframe`, que no admite fotos, chips ni cifras
-  coloreadas.
+  coloreadas. **Se ordena pulsando la cabecera**, no con un control aparte.
 - `player_cell` — foto circular con el chip de demarcación encajado, nombre y
   equipo. Es la unidad que se repite en las tres tablas de jugadores.
 - `delta_cell` — **la firma del panel.** La variación lleva dentro de su propia
@@ -84,6 +84,18 @@ MED `#00726E`, DEL `#C23400`, ENT `#4A4F54`.
 - `podium` — los tres primeros como listado jerárquico, con el líder en tinta.
 - `notice` — avisos, y en particular el que marca la caja como estimada.
 - `bar_cell`, `tag`, `section`, `player_header`.
+
+## El estado vive en la URL
+
+Ordenar es pulsar la cabecera de la columna, y eso es un enlace: navega y
+recarga la aplicación entera. Para que los filtros no se evaporen en cada clic,
+posición, equipo, rango, búsqueda y "solo en venta" viajan también en la URL
+(`FILTROS_EN_URL` en `app.py`): los widgets leen de ahí su valor inicial y lo
+reescriben al cambiar, y el enlace de ordenación los arrastra consigo.
+
+Efecto secundario que vale la pena: cualquier vista concreta —delanteros de
+menos de 10M ordenados por puntos— es un enlace que se puede guardar o mandar
+por WhatsApp.
 
 ## Iconos
 
@@ -123,8 +135,9 @@ fábrica, que aquí significaría "ha bajado de precio".
 
 1. **Un dato ausente es un guion gris, nunca un cero.** `points` llega a nulo
    desde la API para equipos sin puntuar, y "no jugó" no es "jugó 0".
-2. **La caja estimada se presenta siempre junto a su aviso.** Es una
-   reconstrucción a partir de movimientos, no el saldo real de nadie.
-3. **El valor de plantilla no se insinúa nunca como dinero disponible.**
-4. **Los minutos no son probabilidad de alineación**, y el panel lo dice donde
+2. **El valor de plantilla no se insinúa nunca como dinero disponible.** La API
+   no devuelve el saldo de los rivales, así que el panel no lo muestra ni lo
+   sugiere. La estimación de caja que hubo aquí se retiró a petición del
+   usuario; el cálculo sigue en `analytics/money.py` por si vuelve.
+3. **Los minutos no son probabilidad de alineación**, y el panel lo dice donde
    se muestran.

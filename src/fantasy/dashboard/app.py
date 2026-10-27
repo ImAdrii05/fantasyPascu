@@ -8,6 +8,7 @@ justo lo que hace legible un listado de 800 jugadores.
 
 from datetime import date, datetime
 from html import escape
+from urllib.parse import urlencode
 import textwrap
 import streamlit as st
 import pandas as pd
@@ -17,7 +18,6 @@ from supabase import create_client
 
 from fantasy import config
 from fantasy.store.supabase import fetch_all
-from fantasy.analytics.money import calculate_estimated_cash, suggest_initial_balance
 from fantasy.dashboard import ui
 
 # Configuración de página
@@ -219,6 +219,31 @@ def format_points(val: int | float | None) -> str:
         return str(val)
 
 
+# Los filtros y el orden viven en la URL, no solo en la sesión. Pulsar una
+# cabecera de tabla para ordenar es una navegación y recarga la página entera,
+# y sin esto se perderían los filtros en cada clic. De paso, una vista concreta
+# queda guardable como enlace.
+FILTROS_EN_URL = ("pos", "equipo", "buscar", "mercado", "rango")
+
+
+def guardar_en_url(param: str, valor, vacio) -> None:
+    """Callback de widget: refleja su valor en la URL, o lo quita si está vacío."""
+    if valor == vacio or valor is None or valor == "":
+        st.query_params.pop(param, None)
+    else:
+        st.query_params[param] = str(valor)
+
+
+def _sync(param: str, widget_key: str, vacio) -> None:
+    guardar_en_url(param, st.session_state.get(widget_key), vacio)
+
+
+def indice_en_url(param: str, opciones: list[str]) -> int:
+    """Posición guardada en la URL dentro de una lista de opciones (0 si no hay)."""
+    valor = st.query_params.get(param)
+    return opciones.index(valor) if valor in opciones else 0
+
+
 def style_chart(fig, title: str = "") -> None:
     """Aplica el tema del panel a una figura de Plotly.
 
@@ -360,31 +385,62 @@ def main():
 
 
 
-    # Filtro por posición
     positions = ["Todas"] + sorted([p for p in df_players["position"].dropna().unique() if p])
-    sel_position = st.sidebar.selectbox("Posición", positions)
+    sel_position = st.sidebar.selectbox(
+        "Posición",
+        positions,
+        index=indice_en_url("pos", positions),
+        key="f_pos",
+        on_change=lambda: _sync("pos", "f_pos", "Todas"),
+    )
 
-    # Filtro por equipo
     team_list = ["Todos"] + sorted(df_players["team_name"].unique())
-    sel_team = st.sidebar.selectbox("Equipo", team_list)
+    sel_team = st.sidebar.selectbox(
+        "Equipo",
+        team_list,
+        index=indice_en_url("equipo", team_list),
+        key="f_equipo",
+        on_change=lambda: _sync("equipo", "f_equipo", "Todos"),
+    )
 
-    # Rango de precio
     df_latest = df_daily[df_daily["snapshot_date"].dt.date == latest_date].copy()
     max_market_val = int(df_latest["market_value"].dropna().max()) if not df_latest.empty else 100_000_000
     max_millones = max(1, -(-max_market_val // 1_000_000))
+
+    rango_guardado = (0, max_millones)
+    if "-" in st.query_params.get("rango", ""):
+        try:
+            desde_txt, hasta_txt = st.query_params["rango"].split("-", 1)
+            rango_guardado = (
+                max(0, min(max_millones, int(desde_txt))),
+                max(0, min(max_millones, int(hasta_txt))),
+            )
+        except ValueError:
+            rango_guardado = (0, max_millones)
+
     rango_millones = st.sidebar.slider(
         "Rango de valor",
         min_value=0,
         max_value=max_millones,
-        value=(0, max_millones),
+        value=rango_guardado,
         step=1,
         format="%d M",
+        key="f_rango",
         help=f"El jugador más caro vale {format_money(max_market_val)}.",
+        on_change=lambda: guardar_en_url(
+            "rango",
+            f"{st.session_state.f_rango[0]}-{st.session_state.f_rango[1]}",
+            f"0-{max_millones}",
+        ),
     )
     rango_precio = (rango_millones[0] * 1_000_000, rango_millones[1] * 1_000_000)
 
-    # Búsqueda por texto
-    search_query = st.sidebar.text_input("Buscar jugador", "").strip().lower()
+    search_query = st.sidebar.text_input(
+        "Buscar jugador",
+        value=st.query_params.get("buscar", ""),
+        key="f_buscar",
+        on_change=lambda: _sync("buscar", "f_buscar", ""),
+    ).strip().lower()
 
     # Calcular variación si hay al menos 2 días de histórico
     has_variation = False
@@ -451,27 +507,33 @@ def main():
     with tab_market:
         solo_mercado_tab = st.checkbox(
             "Solo lo que está en venta hoy en mi liga",
-            value=False,
-            key="chk_actual_mercado",
+            value=st.query_params.get("mercado") == "1",
+            key="f_mercado",
             help="Deja solo los futbolistas con puja abierta ahora mismo en tu liga privada.",
+            on_change=lambda: guardar_en_url("mercado", "1" if st.session_state.f_mercado else "", ""),
         )
 
-        filter_active_market = solo_mercado_tab
-        df_view = df_market[df_market["en_mercado"]].copy() if filter_active_market else df_market.copy()
+        df_view = df_market[df_market["en_mercado"]].copy() if solo_mercado_tab else df_market.copy()
 
-        if has_variation:
-            opciones_orden = [
-                "Subida %",
-                "Subida €",
-                "Valor",
-                "Caída %",
-                "Puntos",
-                "Media",
-                "Nombre",
-            ]
-        else:
-            opciones_orden = ["Valor", "Puntos", "Media", "Nombre"]
-        sel_orden = st.radio("Ordenar por", opciones_orden, horizontal=True)
+        # Orden: se pulsa directamente en la cabecera de la tabla.
+        ORDENES = {
+            "jugador": "name",
+            "valor": "market_value",
+            "variacion": "pct_change",
+            "puntos": "points",
+            "media": "average_points",
+        }
+        orden = st.query_params.get("orden", "variacion" if has_variation else "valor")
+        if orden not in ORDENES or (orden == "variacion" and not has_variation):
+            orden = "valor"
+        sentido = st.query_params.get("dir")
+        if sentido not in ("asc", "desc"):
+            # Los nombres se leen de la A a la Z; todo lo demás, de mayor a menor.
+            sentido = "asc" if orden == "jugador" else "desc"
+
+        df_sorted = df_view.sort_values(
+            by=ORDENES[orden], ascending=(sentido == "asc"), na_position="last"
+        )
 
         # Cifras de cabecera en una sola fila con filetes: cuatro tarjetas
         # idénticas serían el andamio perezoso, y aquí el protagonista es la tabla.
@@ -532,31 +594,6 @@ def main():
                 )
             )
 
-        # ORDENACIÓN DEL RANKING
-        if has_variation:
-            if sel_orden == "Subida %":
-                df_sorted = df_view.sort_values(by="pct_change", ascending=False, na_position="last")
-            elif sel_orden == "Subida €":
-                df_sorted = df_view.sort_values(by="diff_value", ascending=False, na_position="last")
-            elif sel_orden == "Valor":
-                df_sorted = df_view.sort_values(by="market_value", ascending=False, na_position="last")
-            elif sel_orden == "Caída %":
-                df_sorted = df_view.sort_values(by="pct_change", ascending=True, na_position="last")
-            elif sel_orden == "Puntos":
-                df_sorted = df_view.sort_values(by="points", ascending=False, na_position="last")
-            elif sel_orden == "Media":
-                df_sorted = df_view.sort_values(by="average_points", ascending=False, na_position="last")
-            else:
-                df_sorted = df_view.sort_values(by="name", ascending=True)
-        else:
-            if sel_orden == "Valor":
-                df_sorted = df_view.sort_values(by="market_value", ascending=False, na_position="last")
-            elif sel_orden == "Puntos":
-                df_sorted = df_view.sort_values(by="points", ascending=False, na_position="last")
-            elif sel_orden == "Media":
-                df_sorted = df_view.sort_values(by="average_points", ascending=False, na_position="last")
-            else:
-                df_sorted = df_view.sort_values(by="name", ascending=True)
 
         df_display = df_sorted.reset_index(drop=True)
         df_display["rank"] = df_display.index + 1
@@ -572,14 +609,14 @@ def main():
 
         columns = [
             {"label": "#", "align": "right", "cls": "rk"},
-            {"label": "Jugador", "align": "left"},
-            {"label": "Valor", "align": "right", "cls": "num"},
+            {"label": "Jugador", "align": "left", "sort": "jugador"},
+            {"label": "Valor", "align": "right", "cls": "num", "sort": "valor"},
         ]
         if has_variation:
-            columns.append({"label": "Variación", "align": "right"})
+            columns.append({"label": "Variación", "align": "right", "sort": "variacion"})
         columns += [
-            {"label": "Pts", "align": "right", "cls": "num"},
-            {"label": "Media", "align": "right", "cls": "num hide-sm"},
+            {"label": "Pts", "align": "right", "cls": "num", "sort": "puntos"},
+            {"label": "Media", "align": "right", "cls": "num hide-sm", "sort": "media"},
             {"label": "Mercado", "align": "center", "cls": "hide-sm"},
         ]
 
@@ -618,10 +655,25 @@ def main():
             ui.section(
                 "Mercado",
                 "wallet",
-                f"{mostrados}{de_mas} futbolistas, ordenados por {sel_orden.lower()}.",
+                f"{mostrados}{de_mas} futbolistas. Pulsa una cabecera para ordenar por esa columna.",
             )
         )
-        render_html(ui.data_table(columns, rows))
+        # Los filtros se arrastran en el enlace de ordenación para no perderlos.
+        arrastrar = urlencode(
+            {k: v for k, v in st.query_params.to_dict().items() if k in FILTROS_EN_URL}
+        )
+        render_html(
+            ui.data_table(
+                columns,
+                rows,
+                sort={
+                    "param": "orden",
+                    "current": orden,
+                    "dir": sentido,
+                    "keep": f"{arrastrar}&" if arrastrar else "",
+                },
+            )
+        )
 
     # =========================================================================
     # PESTAÑA 2: EVOLUCIÓN Y RENDIMIENTO HISTÓRICO (GRÁFICAS INTERACTIVAS)
@@ -954,82 +1006,36 @@ def main():
                 )
 
 
-            cajas_estimadas = calculate_estimated_cash(df_cur_standings, df_league_movements)
-            if not cajas_estimadas.empty:
-                render_html(
-                    ui.section(
-                        "Caja estimada",
-                        "wallet",
-                        "Saldo inicial más el flujo acumulado de fichajes, ventas y premios.",
-                    )
+            # La estimación de caja se retiró a petición del usuario. La API no
+            # devuelve el saldo de los rivales, así que lo que se mostraba era una
+            # reconstrucción a partir de los movimientos, no un dato. El cálculo
+            # sigue en analytics/money.py por si vuelve a hacer falta.
+            render_html(ui.section("Clasificación", "trophy"))
+
+            cls_columns = [
+                {"label": "#", "align": "right", "cls": "rk"},
+                {"label": "Equipo", "align": "left"},
+                {"label": "Pts", "align": "right", "cls": "num"},
+                {"label": "Valor de plantilla", "align": "right", "cls": "num"},
+            ]
+            cls_rows = []
+            for _, r in df_cur_standings.sort_values("position").iterrows():
+                equipo_html = (
+                    '<div class="pc-tx"><span class="pc-name">'
+                    + escape(str(r.get("team_name") or "—"))
+                    + '</span><span class="pc-team">'
+                    + escape(str(r.get("manager_name") or "Mánager"))
+                    + "</span></div>"
                 )
-                render_html(
-                    ui.notice(
-                        "La API devuelve el saldo de los rivales <b>siempre a nulo</b>: esto es una "
-                        "<b>estimación</b>, no su dinero real. Las diferencias entre mánagers sí son "
-                        "fiables; el absoluto no. Y el valor de plantilla <b>no es dinero disponible</b>: "
-                        "no deduzcas de él cuánto puede pujar nadie.",
-                        kind="warn",
-                    )
+                cls_rows.append(
+                    [
+                        format_points(r.get("position")),
+                        equipo_html,
+                        format_points(r.get("points")),
+                        format_money(r.get("team_value")),
+                    ]
                 )
-
-                df_tabla_caja = pd.merge(
-                    df_cur_standings[
-                        ["league_team_id", "position", "team_name", "manager_name", "points", "team_value"]
-                    ],
-                    cajas_estimadas[
-                        ["team_id", "cash_estimate", "net_transfer_flow", "prize_flow", "movements_count"]
-                    ],
-                    left_on="league_team_id",
-                    right_on="team_id",
-                    how="left",
-                ).sort_values("position")
-
-                def _signed(value) -> str:
-                    """Importe con signo y color: verde entra, rojo sale."""
-                    if pd.isna(value):
-                        return MUTED_DASH
-                    tone = "up" if value > 0 else ("down" if value < 0 else "flat")
-                    return f'<span class="mn mn-{tone}">{format_money(value, with_sign=True)}</span>'
-
-                caja_columns = [
-                    {"label": "#", "align": "right", "cls": "rk"},
-                    {"label": "Equipo", "align": "left"},
-                    {"label": "Pts", "align": "right", "cls": "num"},
-                    {"label": "Plantilla", "align": "right", "cls": "num"},
-                    {"label": "Caja estimada", "align": "right", "cls": "num"},
-                    {"label": "Fichajes", "align": "right", "cls": "num hide-sm"},
-                    {"label": "Premios", "align": "right", "cls": "num hide-sm"},
-                    {"label": "Movs", "align": "right", "cls": "num hide-sm"},
-                ]
-                caja_rows = []
-                for _, r in df_tabla_caja.iterrows():
-                    caja = r.get("cash_estimate")
-                    if pd.notnull(caja) and caja < 0:
-                        caja_html = f'<span class="mn mn-down">{format_money(caja)}</span>'
-                    else:
-                        caja_html = format_money(caja)
-                    movs = r.get("movements_count")
-                    equipo_html = (
-                        '<div class="pc-tx"><span class="pc-name">'
-                        + escape(str(r.get("team_name") or "—"))
-                        + '</span><span class="pc-team">'
-                        + escape(str(r.get("manager_name") or "Mánager"))
-                        + "</span></div>"
-                    )
-                    caja_rows.append(
-                        [
-                            format_points(r.get("position")),
-                            equipo_html,
-                            format_points(r.get("points")),
-                            format_money(r.get("team_value")),
-                            caja_html,
-                            _signed(r.get("net_transfer_flow")),
-                            _signed(r.get("prize_flow")),
-                            str(int(movs)) if pd.notnull(movs) else MUTED_DASH,
-                        ]
-                    )
-                render_html(ui.data_table(caja_columns, caja_rows, max_height="none"))
+            render_html(ui.data_table(cls_columns, cls_rows, max_height="none"))
 
         if not df_league_movements.empty:
             render_html(ui.section("Movimientos de la liga", "trend_up"))

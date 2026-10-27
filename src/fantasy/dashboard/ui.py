@@ -123,6 +123,8 @@ _ICON_PATHS = {
     '<circle cx="12" cy="12" r="2.5"/><path d="M3 9h3v6H3M21 9h-3v6h3"/>',
     "alert": '<path d="M12 4 2.5 20h19L12 4Z"/><path d="M12 10v4M12 17.2v.1"/>',
     "dot": '<circle cx="12" cy="12" r="4.5"/>',
+    "caret_down": '<path d="m7 10 5 5 5-5"/>',
+    "caret_up": '<path d="m7 14 5-5 5 5"/>',
 }
 
 
@@ -174,7 +176,9 @@ def delta_cell(text: str, pct: float | None, ratio: float = 0.0) -> str:
     if pct is None:
         return '<span class="muted">—</span>'
     direction = "up" if pct > 0 else ("down" if pct < 0 else "flat")
-    width = max(0.0, min(1.0, abs(ratio))) * 100
+    # Suelo del 18%: una barra proporcional pura deja los movimientos pequeños
+    # como una astilla de un píxel, que se lee como un defecto y no como un dato.
+    width = 18 + max(0.0, min(1.0, abs(ratio))) * 82
     pct_txt = f"{pct:+.2f}%".replace(".", ",")
     return (
         f'<span class="dl dl-{direction}">'
@@ -204,18 +208,44 @@ def bar_cell(pct: float | None, label: str | None = None) -> str:
     )
 
 
-def data_table(columns: list[dict[str, Any]], rows: Iterable[list[str]], max_height: str = "66vh") -> str:
+def data_table(
+    columns: list[dict[str, Any]],
+    rows: Iterable[list[str]],
+    max_height: str = "66vh",
+    sort: dict[str, str] | None = None,
+) -> str:
     """Compone una tabla densa con cabecera fija.
 
     Args:
         columns: Cada columna es {"label", "align" (left|right|center), "cls"}.
             `cls` admite `hide-sm` para que la columna desaparezca en móvil.
+            Con "sort" la cabecera se vuelve pulsable para ordenar por ella.
         rows: Filas ya convertidas a HTML, en el mismo orden que `columns`.
+        sort: {"param", "current", "dir", "keep"}. El orden viaja en la URL
+            porque pulsar una cabecera recarga la página: así el estado
+            sobrevive, y además una vista ordenada se puede guardar o compartir
+            como enlace. `keep` son los parámetros ya codificados que hay que
+            arrastrar (los filtros) para no perderlos al ordenar.
     """
-    head = "".join(
-        f'<th class="al-{c.get("align", "left")} {c.get("cls", "")}">{escape(str(c["label"]))}</th>'
-        for c in columns
-    )
+
+    def head_cell(c: dict[str, Any]) -> str:
+        label = escape(str(c["label"]))
+        key = c.get("sort")
+        if not (sort and key):
+            return f'<th class="al-{c.get("align", "left")} {c.get("cls", "")}">{label}</th>'
+        activa = key == sort.get("current")
+        descendente = sort.get("dir", "desc") == "desc"
+        siguiente = "asc" if (activa and descendente) else "desc"
+        flecha = icon("caret_up" if (activa and not descendente) else "caret_down", 13, "th-c")
+        keep = sort.get("keep", "")
+        href = f'?{keep}{sort["param"]}={key}&dir={siguiente}'
+        clase = "th-s th-a" if activa else "th-s"
+        return (
+            f'<th class="al-{c.get("align", "left")} {c.get("cls", "")}">'
+            f'<a class="{clase}" href="{href}" title="Ordenar por {label}">{label}{flecha}</a></th>'
+        )
+
+    head = "".join(head_cell(c) for c in columns)
     body = []
     for row in rows:
         cells = "".join(
@@ -383,9 +413,36 @@ html, body, [class*="st-"], .stApp, button, input, select, textarea {
 }
 ::-webkit-scrollbar-thumb:hover { background: #A6ADB3; }
 
-/* Cromo de Streamlit que no pertenece a este diseño. */
-#MainMenu, footer, header[data-testid="stHeader"] { display: none !important; }
-[data-testid="stDecoration"] { display: none !important; }
+/* Cromo de Streamlit que no pertenece a este diseño. La cabecera NO se oculta:
+   cuando la barra lateral está plegada, el botón para volver a abrirla vive
+   dentro de ella, así que esconderla dejaba el menú cerrado para siempre. Se
+   deja sin fondo y sin alto, pero visible y pulsable. */
+header[data-testid="stHeader"] {
+  background: transparent !important;
+  height: 0 !important;
+  min-height: 0 !important;
+  overflow: visible !important;
+}
+[data-testid="stAppDeployButton"], [data-testid="stMainMenu"],
+[data-testid="stStatusWidget"], [data-testid="stDecoration"], #MainMenu, footer {
+  display: none !important;
+}
+/* El toolbar se queda: dentro vive el botón de reabrir el menú. Se deja
+   transparente y sin capturar clics salvo el propio botón. */
+[data-testid="stToolbar"] { background: transparent !important; pointer-events: none; }
+[data-testid="stToolbar"] * { pointer-events: none; }
+[data-testid="stExpandSidebarButton"] {
+  pointer-events: auto !important;
+  position: fixed !important; top: 22px; left: 32px; z-index: 80;
+  width: 32px; height: 32px; border-radius: 5px;
+  background: rgba(255,255,255,.14) !important;
+  color: #FFFFFF !important;
+  transition: background-color .14s cubic-bezier(.16,1,.3,1);
+}
+[data-testid="stExpandSidebarButton"]:hover { background: rgba(255,255,255,.26) !important; }
+[data-testid="stExpandSidebarButton"] span { color: #FFFFFF !important; }
+/* Con el menú plegado el botón cae sobre el masthead, así que se le hace hueco. */
+[data-testid="stSidebar"][aria-expanded="false"] ~ div .mh { padding-left: 76px; }
 
 .ic { flex: none; vertical-align: -0.18em; }
 
@@ -468,6 +525,24 @@ html, body, [class*="st-"], .stApp, button, input, select, textarea {
   font-size: 12.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase;
   padding: 10px 12px; white-space: nowrap;
 }
+/* Cabecera pulsable. El acento queda abajo y no como color de texto, para que
+   la fila de cabecera siga leyéndose como un bloque de tinta continuo. */
+.dt thead th:has(.th-s) { padding: 0; }
+.th-s {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 10px 12px; color: rgba(255,255,255,.72);
+  text-decoration: none; cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color .14s cubic-bezier(.16,1,.3,1), border-color .14s cubic-bezier(.16,1,.3,1);
+}
+.al-right .th-s { flex-direction: row-reverse; }
+.th-s:hover { color: #fff; border-bottom-color: rgba(255,255,255,.35); }
+.th-s:focus-visible { outline-offset: -3px; }
+.th-a { color: #fff; border-bottom-color: #fff; }
+.th-c { opacity: 0; transition: opacity .14s ease; }
+.th-s:hover .th-c { opacity: .6; }
+.th-a .th-c { opacity: 1; }
+
 .dt tbody td {
   padding: 7px 12px; font-size: 14px; color: var(--text);
   border-bottom: 1px solid var(--line);

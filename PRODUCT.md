@@ -35,13 +35,14 @@ saben.
 
 ## Positioning
 
-Dos cosas que ninguna herramienta pública hace para una liga privada concreta:
+**Histórico propio**: 57 días acumulados de precio, puntos y minutos por
+jugador, construidos día a día porque la API no los da. Es lo que ninguna
+herramienta pública tiene de una liga privada concreta.
 
-1. **Histórico propio**: 57 días acumulados de precio, puntos y minutos por
-   jugador, construidos día a día porque la API no los da.
-2. **Reconstrucción del dinero ajeno**: la API devuelve el saldo de los rivales
-   siempre a nulo. La app lo estima recorriendo el histórico completo de
-   movimientos de la liga (compras, ventas, cláusulas, premios).
+Existió además una reconstrucción del dinero de los rivales a partir del
+histórico de movimientos. **El usuario la retiró del panel** el 2026-10-27: la
+API da su saldo siempre a nulo y lo que se mostraba era una estimación, no un
+dato. El cálculo sigue en `analytics/money.py`, sin usarse.
 
 ## Operating Context
 
@@ -61,9 +62,8 @@ rehacerse.
 Verdades de los datos que el diseño no puede contradecir:
 
 - **El saldo líquido de los rivales no existe en la API** (siempre nulo,
-  comprobado). Lo que se muestra es una *estimación* a partir del flujo de
-  movimientos, y las diferencias relativas entre mánagers son fiables aunque el
-  absoluto no lo sea. Nunca deducirlo del valor de plantilla.
+  comprobado) y el panel no lo muestra. Nunca deducirlo del valor de plantilla
+  ni presentar una estimación como si fuera el dato.
 - **`points` a nulo significa "sin dato", no cero.** Hay equipos sin puntuar.
 - Los minutos solo están en el detalle de cada jugador, no en el listado.
 - **No existe dato fiable de probabilidad de titularidad.** Se usan los minutos
