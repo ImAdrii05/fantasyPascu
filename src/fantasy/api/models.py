@@ -1,6 +1,7 @@
 """Modelos de datos tolerantes para deserializar las respuestas de la API de LaLiga Fantasy."""
 
 from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
 from typing import Any
 
 # Mapeo de positionId -> nombre de posición, verificado contra la respuesta real
@@ -12,6 +13,34 @@ POSITION_BY_ID: dict[int, str] = {
     4: "Delantero",
     5: "Entrenador",
 }
+
+
+# La API manda números como cadena, como null y a veces ausentes. El resto del
+# fichero resuelve eso con un try/except por campo; en la plantilla hay cinco
+# seguidos, así que aquí se hace una vez.
+def _as_int(valor: Any) -> int | None:
+    try:
+        return int(valor) if valor is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_float(valor: Any) -> float | None:
+    try:
+        return float(valor) if valor is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_datetime(valor: Any) -> datetime | None:
+    """Convierte un ISO-8601 con zona en datetime consciente de zona."""
+    if not valor:
+        return None
+    try:
+        # Python acepta "+01:00" pero no la "Z" hasta 3.11.
+        return datetime.fromisoformat(str(valor).replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 @dataclass
@@ -493,6 +522,88 @@ class League:
             team_id=str(team_id) if team_id else None,
             team_money=money,
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class SquadPlayer:
+    """Un jugador dentro de la plantilla de un mánager, con su cláusula.
+
+    La cláusula es dato vivo, no histórico: lo que importa es cuánto cuesta
+    AHORA y a qué hora exacta se abre. Por eso este modelo no se guarda en la
+    base como snapshot diario, se pide a la API en el momento.
+    """
+    league_id: str
+    league_team_id: str
+    manager_id: str | None
+    manager_name: str | None
+    player_id: str
+    player_name: str
+    position: str | None = None
+    position_id: int | None = None
+    club_name: str | None = None
+    image_url: str | None = None
+    market_value: int | None = None
+    points: int | None = None
+    average_points: float | None = None
+    buyout_clause: int | None = None
+    # Hora exacta a la que la cláusula queda pagable. Llega en ISO con zona
+    # (`2026-10-28T19:28:27+01:00`), así que se conserva con su offset: un
+    # clausulazo se juega al segundo y convertir a naive perdería la hora real.
+    clause_locked_until: datetime | None = None
+    is_shielded: bool = False
+    player_team_id: str | None = None
+
+    @classmethod
+    def from_api(cls, league_id: str, league_team_id: str, data: dict[str, Any]) -> "SquadPlayer":
+        master = data.get("playerMaster") or {}
+        manager = data.get("manager") or {}
+        club = master.get("team") or {}
+
+        position_id = master.get("positionId")
+        try:
+            position_id = int(position_id) if position_id is not None else None
+        except (TypeError, ValueError):
+            position_id = None
+
+        imagenes = (master.get("images") or {}).get("transparent") or {}
+        image_url = imagenes.get("256x256") or imagenes.get("128x128")
+
+        return cls(
+            league_id=str(league_id),
+            league_team_id=str(league_team_id),
+            manager_id=str(data.get("managerId")) if data.get("managerId") else None,
+            manager_name=manager.get("managerName") if isinstance(manager, dict) else None,
+            player_id=str(master.get("id") or ""),
+            player_name=master.get("nickname") or master.get("name") or "Desconocido",
+            position=POSITION_BY_ID.get(position_id) if position_id else None,
+            position_id=position_id,
+            club_name=club.get("name") if isinstance(club, dict) else None,
+            image_url=image_url,
+            market_value=_as_int(master.get("marketValue")),
+            points=_as_int(master.get("points")),
+            average_points=_as_float(master.get("averagePoints")),
+            buyout_clause=_as_int(data.get("buyoutClause")),
+            clause_locked_until=_as_datetime(data.get("buyoutClauseLockedEndTime")),
+            is_shielded=bool(data.get("isShielded")),
+            player_team_id=str(data.get("playerTeamId")) if data.get("playerTeamId") else None,
+        )
+
+    def clause_open(self, ahora: datetime | None = None) -> bool:
+        """True si la cláusula se puede pagar ya.
+
+        Un escudo activo la bloquea aunque la fecha haya pasado, y una fecha
+        ausente se trata como abierta: es lo que devuelve la API cuando nunca
+        hubo bloqueo.
+        """
+        if self.is_shielded:
+            return False
+        if self.clause_locked_until is None:
+            return True
+        ahora = ahora or datetime.now(timezone.utc)
+        return self.clause_locked_until <= ahora
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

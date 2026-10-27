@@ -6,7 +6,7 @@ porque ésta no admite fotos, chips de demarcación ni cifras coloreadas, que es
 justo lo que hace legible un listado de 800 jugadores.
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from html import escape
 from urllib.parse import urlencode
 import textwrap
@@ -131,6 +131,61 @@ def load_player_history(player_id: str) -> pd.DataFrame:
         .order("snapshot_date")
     )
     return _df(rows, ["snapshot_date", "player_id", "market_value", "points"])
+
+
+# TTL corto y a proposito. Una clausula se juega al segundo: media hora de
+# cache aqui significaria perder el momento de apertura, que es justo el dato.
+@st.cache_data(ttl=90)
+def load_squads(league_id: str) -> tuple[pd.DataFrame, str]:
+    """Plantillas de todos los managers de la liga, con clausulas en vivo.
+
+    Esto NO sale de Supabase: el cron guarda una foto al dia y una clausula
+    cambia de estado a una hora exacta. Se pide a la API en el momento.
+
+    Returns:
+        (DataFrame de jugadores, hora de la consulta en formato HH:MM:SS).
+    """
+    from fantasy.api.client import FantasyApiClient
+
+    client = FantasyApiClient(throttle_seconds=0.3)
+    standings, _ = client.get_league_standing(league_id)
+
+    filas = []
+    for fila in standings:
+        jugadores, _ = client.get_league_team(league_id, fila.league_team_id)
+        for j in jugadores:
+            d = j.to_dict()
+            d["manager_name"] = j.manager_name or fila.manager_name or fila.team_name
+            d["clause_open"] = j.clause_open()
+            filas.append(d)
+
+    columnas = [
+        "league_id", "league_team_id", "manager_id", "manager_name", "player_id",
+        "player_name", "position", "position_id", "club_name", "image_url",
+        "market_value", "points", "average_points", "buyout_clause",
+        "clause_locked_until", "is_shielded", "player_team_id", "clause_open",
+    ]
+    return _df(filas, columnas), datetime.now().strftime("%H:%M:%S")
+
+
+def formatear_cuenta_atras(cuando, ahora=None) -> str:
+    """Convierte la hora de apertura de una clausula en una espera legible."""
+    if cuando is None or pd.isna(cuando):
+        return ui.tag("Abierta", "live")
+    ahora = ahora or datetime.now(timezone.utc)
+    restante = cuando - ahora
+    segundos = restante.total_seconds()
+    if segundos <= 0:
+        return ui.tag("Abierta", "live")
+    dias, resto = divmod(int(segundos), 86400)
+    horas, resto = divmod(resto, 3600)
+    minutos = resto // 60
+    if dias:
+        return f'<span class="muted">{dias}d {horas}h</span>'
+    if horas:
+        return f'<span class="muted">{horas}h {minutos}m</span>'
+    # Menos de una hora: es el momento de estar mirando, asi que se destaca.
+    return ui.tag(f"{minutos}m", "warn")
 
 
 @st.cache_data(ttl=CACHE_TTL)
@@ -616,11 +671,12 @@ def main():
         ]
 
     # Pestañas principales
-    tab_market, tab_evolution, tab_minutes, tab_league = st.tabs(
+    tab_market, tab_evolution, tab_minutes, tab_squads, tab_league = st.tabs(
         [
             "Mercado",
             "Jugador",
             "Minutos",
+            "Plantillas",
             "Liga privada",
         ]
     )
@@ -1103,7 +1159,164 @@ def main():
         _pestana_minutos()
 
     # =========================================================================
-    # PESTAÑA 4: LIGA PRIVADA Y CAJA (FORMATO COMPACTO + CAJA ESTIMADA REAL)
+    # PESTAÑA 4: PLANTILLAS Y CLÁUSULAS (CONSULTA EN VIVO)
+    # =========================================================================
+    # Cada pestaña es un fragmento: así un clic dentro de ella (ordenar,
+    # cambiar de jugador, mover el deslizador) solo la redibuja a ella y no
+    # las otras tres, que Streamlit pintaría igualmente aunque no se vean.
+    @st.fragment
+    def _pestana_plantillas():
+        render_html(
+            ui.section(
+                "Plantillas y cláusulas",
+                "shirt",
+                "Quién tiene a quién, lo que cuesta su cláusula y a qué hora exacta se abre.",
+            )
+        )
+
+        ligas = sorted(league_names) or sorted(
+            set(df_standings["league_id"].astype(str)) if not df_standings.empty else set()
+        )
+        if not ligas:
+            render_html(ui.notice("No hay ligas detectadas todavía."))
+            return
+
+        liga_sel = ligas[0]
+        if len(ligas) > 1:
+            liga_sel = st.selectbox(
+                "Liga",
+                ligas,
+                format_func=lambda x: league_names.get(x, x),
+                key="liga_plantillas",
+            )
+
+        # La carga va a la API, no a Supabase, y cuesta unos segundos. Imponerla
+        # en cada arranque devolvería la lentitud que se acaba de quitar, así que
+        # se pide explícitamente y luego se queda en caché 90 segundos.
+        if st.button("Consultar cláusulas ahora", type="primary", key="cargar_plantillas"):
+            st.session_state["plantillas_pedidas"] = True
+
+        if not st.session_state.get("plantillas_pedidas"):
+            render_html(
+                ui.notice(
+                    "Las cláusulas son dato vivo: cambian de estado a una hora exacta, así que "
+                    "no se guardan en la foto diaria. Pulsa el botón para consultarlas."
+                )
+            )
+            return
+
+        with st.spinner("Consultando las plantillas de la liga..."):
+            try:
+                df_squad, hora = load_squads(liga_sel)
+            except Exception as e:
+                render_html(
+                    ui.notice(
+                        f"No se pudieron leer las plantillas: {e}. "
+                        "Si es un error de autenticación, vuelve a iniciar sesión.",
+                        kind="warn",
+                    )
+                )
+                return
+
+        if df_squad.empty:
+            render_html(ui.notice("La API no devolvió ninguna plantilla."))
+            return
+
+        df_squad["clause_locked_until"] = pd.to_datetime(
+            df_squad["clause_locked_until"], errors="coerce", utc=True
+        )
+        ahora = datetime.now(timezone.utc)
+        # `clause_open` viene calculado del modelo, pero la caché dura 90s y la
+        # cuenta atrás se dibuja ahora: se recalcula para que no mienta.
+        df_squad["abierta"] = (~df_squad["is_shielded"].astype(bool)) & (
+            df_squad["clause_locked_until"].isna() | (df_squad["clause_locked_until"] <= ahora)
+        )
+        # Lo que de verdad decide un clausulazo: cuánto pagas de más sobre el
+        # valor de mercado. Una cláusula igual al valor es una ganga.
+        df_squad["sobrecoste"] = df_squad["buyout_clause"] - df_squad["market_value"]
+
+        abiertas = int(df_squad["abierta"].sum())
+        render_html(
+            ui.stat_row(
+                [
+                    ("Jugadores", str(len(df_squad)), "en toda la liga", ""),
+                    ("Mánagers", str(df_squad["manager_name"].nunique()), "con plantilla", ""),
+                    ("Cláusulas abiertas", str(abiertas), "pagables ahora mismo", "up"),
+                    ("Consultado", hora, "dato en vivo", ""),
+                ]
+            )
+        )
+
+        vista = st.radio(
+            "Vista",
+            ["Cláusulas abiertas", "Por mánager"],
+            horizontal=True,
+            key="vista_plantillas",
+            label_visibility="collapsed",
+        )
+
+        if vista == "Cláusulas abiertas":
+            df_v = df_squad[df_squad["abierta"]].copy()
+            nota = (
+                f"{len(df_v)} jugadores clausulables ahora mismo, de menor a mayor sobrecoste "
+                "sobre su valor de mercado."
+            )
+            df_v = df_v.sort_values("sobrecoste")
+        else:
+            managers = sorted(df_squad["manager_name"].dropna().unique())
+            quien = st.selectbox("Mánager", managers, key="manager_plantilla")
+            df_v = df_squad[df_squad["manager_name"] == quien].copy()
+            nota = f"{len(df_v)} jugadores en la plantilla de {quien}."
+            df_v = df_v.sort_values(["position_id", "buyout_clause"], ascending=[True, False])
+
+        if sel_position != "Todas":
+            df_v = df_v[df_v["position"] == sel_position]
+        if search_query:
+            df_v = df_v[df_v["player_name"].str.lower().str.contains(search_query, na=False)]
+
+        render_html(f'<p class="sc-n">{nota}</p>')
+
+        columnas = [
+            {"label": "Jugador", "align": "left"},
+            {"label": "Mánager", "align": "left", "cls": "hide-sm"},
+            {"label": "Valor", "align": "right", "cls": "num"},
+            {"label": "Cláusula", "align": "right", "cls": "num"},
+            {"label": "Sobrecoste", "align": "right", "cls": "num"},
+            {"label": "Se abre", "align": "right"},
+        ]
+
+        filas = []
+        for _, r in df_v.head(200).iterrows():
+            sobre = r.get("sobrecoste")
+            if pd.notnull(sobre) and sobre > 0:
+                sobre_txt = f'<span class="v-down">+{format_money(sobre)}</span>'
+            elif pd.notnull(sobre):
+                sobre_txt = f'<span class="v-up">{format_money(sobre)}</span>'
+            else:
+                sobre_txt = MUTED_DASH
+            filas.append(
+                [
+                    ui.player_cell(
+                        r["player_name"], r.get("club_name"), r.get("position"),
+                        r.get("image_url") or NO_PLAYER_IMG,
+                    ),
+                    str(r.get("manager_name") or ""),
+                    format_money(r.get("market_value")),
+                    format_money(r.get("buyout_clause")),
+                    sobre_txt,
+                    ui.tag("Escudo", "neutral")
+                    if bool(r.get("is_shielded"))
+                    else formatear_cuenta_atras(r.get("clause_locked_until"), ahora),
+                ]
+            )
+        render_html(ui.data_table(columnas, filas))
+
+
+    with tab_squads:
+        _pestana_plantillas()
+
+    # =========================================================================
+    # PESTAÑA 5: LIGA PRIVADA Y CAJA (FORMATO COMPACTO + CAJA ESTIMADA REAL)
     # =========================================================================
     # Cada pestaña es un fragmento: así un clic dentro de ella (ordenar,
     # cambiar de jugador, mover el deslizador) solo la redibuja a ella y no

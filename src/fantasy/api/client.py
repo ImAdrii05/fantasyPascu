@@ -7,7 +7,7 @@ import requests
 
 from fantasy.auth import get_access_token, AuthExpired
 from fantasy.api import endpoints
-from fantasy.api.models import Team, Player, League, LeagueStanding, LeagueMovement
+from fantasy.api.models import Team, Player, League, LeagueStanding, LeagueMovement, SquadPlayer
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +192,26 @@ class FantasyApiClient:
         items = raw if isinstance(raw, list) else (raw.get("elements") or (raw.get("data") or {}).get("elements") or (raw.get("data") if isinstance(raw.get("data"), list) else []))
         movements = [LeagueMovement.from_api(str(league_id), item) for item in items if isinstance(item, dict)]
         return movements, raw
+
+    def get_league_team(
+        self, league_id: str | int, team_id: str | int
+    ) -> tuple[list[SquadPlayer], Any]:
+        """Plantilla de un mánager con cláusulas y escudos. Devuelve (jugadores, raw_json).
+
+        Los jugadores cedidos (`loanedPlayers`) se incluyen: siguen siendo
+        clausulables y dejarlos fuera escondería objetivos reales.
+        """
+        url = endpoints.league_team_url(league_id, team_id)
+        raw = self.get(url)
+        if not isinstance(raw, dict):
+            return [], raw
+        items = list(raw.get("players") or []) + list(raw.get("loanedPlayers") or [])
+        jugadores = [
+            SquadPlayer.from_api(str(league_id), str(team_id), item)
+            for item in items
+            if isinstance(item, dict)
+        ]
+        return jugadores, raw
 
     def get_league_activity_all(
         self, league_id: str | int, max_pages: int = 50

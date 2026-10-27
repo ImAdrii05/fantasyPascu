@@ -46,3 +46,14 @@ def user_me_url() -> str:
 def user_leagues_url() -> str:
     """Listado de ligas en las que participa el usuario."""
     return f"{get_base_url()}/v1/competition/{config.COMPETITION_ID}/leagues?x-lang=es"
+
+
+def league_team_url(league_id: str | int, team_id: str | int) -> str:
+    """Plantilla de un equipo de la liga privada, con cláusulas y escudos.
+
+    VERIFICADO en vivo: es el único endpoint que devuelve, por cada jugador,
+    `buyoutClause`, `buyoutClauseLockedEndTime` e `isShielded`. Ni el mercado ni
+    la clasificación los traen, así que sin esto no hay forma de saber a quién se
+    puede clausular ni cuándo se abre la cláusula.
+    """
+    return f"{get_base_url()}/v1/competition/{config.COMPETITION_ID}/leagues/{league_id}/teams/{team_id}?x-lang=es"

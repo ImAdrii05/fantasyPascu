@@ -1,10 +1,12 @@
 """Tests unitarios para los modelos y cliente de la API de LaLiga Fantasy."""
 
+from datetime import datetime, timedelta, timezone
+
 import responses
 import pytest
 
 from fantasy.api import FantasyApiClient, FantasyApiError
-from fantasy.api.models import Team, Player, League, LeagueStanding, LeagueMovement, PlayerGameweekStat
+from fantasy.api.models import Team, Player, League, LeagueStanding, LeagueMovement, PlayerGameweekStat, SquadPlayer
 from fantasy.collect.players import extract_gameweek_stats
 from fantasy.collect.player_details import parse_player_detail
 from fantasy.auth.store import BaseTokenStore, set_token_store
@@ -265,3 +267,104 @@ def test_get_user_leagues_lista_plana_y_envuelta():
     responses.replace(responses.GET, url, json={"elements": [{"id": "3", "name": "C"}]})
     leagues, _ = client.get_user_leagues()
     assert [lg.id for lg in leagues] == ["3"]
+
+
+# Payload real de /v1/competition/1/leagues/{id}/teams/{id}, recortado.
+SQUAD_PLAYER_REAL = {
+    "buyoutClause": 2253350,
+    "managerId": 6211313,
+    "playerTeamId": "90389155",
+    "buyoutClauseLockedEndTime": "2026-10-28T19:28:27+01:00",
+    "isShielded": False,
+    "manager": {"id": "6211313", "managerName": "Sakito_01"},
+    "playerMaster": {
+        "id": "2078",
+        "name": "Diego Pablo Simeone",
+        "nickname": "Simeone",
+        "positionId": 5,
+        "marketValue": 887335,
+        "points": 12,
+        "averagePoints": 1.5,
+        "team": {"id": "7", "name": "Atlético de Madrid"},
+        "images": {"transparent": {"256x256": "https://x/p2078.png"}},
+    },
+}
+
+
+def test_squad_player_lee_clausula_y_bloqueo():
+    sp = SquadPlayer.from_api("018021020", "38164437", SQUAD_PLAYER_REAL)
+    assert sp.player_name == "Simeone"
+    assert sp.position == "Entrenador"
+    assert sp.buyout_clause == 2253350
+    assert sp.market_value == 887335
+    assert sp.club_name == "Atlético de Madrid"
+    assert sp.player_team_id == "90389155"
+    assert sp.manager_name == "Sakito_01"
+    assert sp.image_url == "https://x/p2078.png"
+    # El offset de la zona no se pierde: un clausulazo se juega al segundo.
+    assert sp.clause_locked_until is not None
+    assert sp.clause_locked_until.utcoffset() == timedelta(hours=1)
+
+
+def test_squad_player_clause_open_respeta_fecha_y_escudo():
+    sp = SquadPlayer.from_api("1", "2", SQUAD_PLAYER_REAL)
+    antes = datetime(2026, 10, 28, 10, 0, tzinfo=timezone.utc)
+    despues = datetime(2026, 10, 29, 10, 0, tzinfo=timezone.utc)
+    assert sp.clause_open(antes) is False
+    assert sp.clause_open(despues) is True
+
+    # Un escudo activo bloquea aunque la fecha ya haya pasado.
+    escudado = SquadPlayer.from_api("1", "2", {**SQUAD_PLAYER_REAL, "isShielded": True})
+    assert escudado.clause_open(despues) is False
+
+    # Sin fecha de bloqueo la API indica que nunca estuvo bloqueada.
+    sin_fecha = SquadPlayer.from_api(
+        "1", "2", {**SQUAD_PLAYER_REAL, "buyoutClauseLockedEndTime": None}
+    )
+    assert sin_fecha.clause_open(antes) is True
+
+
+def test_squad_player_tolera_payload_incompleto():
+    sp = SquadPlayer.from_api("1", "2", {})
+    assert sp.player_name == "Desconocido"
+    assert sp.buyout_clause is None
+    assert sp.clause_locked_until is None
+    assert sp.position is None
+    # Sin fecha y sin escudo cuenta como abierta, igual que en la API.
+    assert sp.clause_open() is True
+
+    basura = SquadPlayer.from_api(
+        "1", "2", {"buyoutClause": "no-un-numero", "buyoutClauseLockedEndTime": "ayer"}
+    )
+    assert basura.buyout_clause is None
+    assert basura.clause_locked_until is None
+
+
+@responses.activate
+def test_get_league_team_incluye_cedidos():
+    from fantasy.api import endpoints
+
+    client = FantasyApiClient(throttle_seconds=0)
+    url = endpoints.league_team_url("018021020", "38164437")
+
+    cedido = {**SQUAD_PLAYER_REAL, "playerTeamId": "999"}
+    responses.add(
+        responses.GET,
+        url,
+        json={"players": [SQUAD_PLAYER_REAL], "loanedPlayers": [cedido], "teamValue": 1},
+    )
+    jugadores, raw = client.get_league_team("018021020", "38164437")
+    # Los cedidos siguen siendo clausulables, así que cuentan.
+    assert [j.player_team_id for j in jugadores] == ["90389155", "999"]
+    assert raw["teamValue"] == 1
+
+
+@responses.activate
+def test_get_league_team_tolera_respuesta_rara():
+    from fantasy.api import endpoints
+
+    client = FantasyApiClient(throttle_seconds=0)
+    url = endpoints.league_team_url("1", "2")
+    responses.add(responses.GET, url, json=[])
+    jugadores, _ = client.get_league_team("1", "2")
+    assert jugadores == []

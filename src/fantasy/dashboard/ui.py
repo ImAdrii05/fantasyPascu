@@ -563,6 +563,11 @@ header[data-testid="stHeader"] {
 .dt .num { font-weight: 600; white-space: nowrap; }
 .muted { color: var(--text-2); }
 
+/* Cifra con signo semantico dentro de una celda: verde lo que favorece al
+   lector, rojo lo que le cuesta dinero. */
+.v-up { color: var(--up); font-weight: 700; }
+.v-down { color: var(--down); font-weight: 700; }
+
 /* ---- Celda de jugador --------------------------------------------------- */
 .pc { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .pc-ph { position: relative; flex: none; }
