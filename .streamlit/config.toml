@@ -1,3 +1,15 @@
+# Tema base de Streamlit. Sin esto, sus propios controles (deslizadores, radios,
+# checkboxes, foco) salen con el rojo de fábrica, que no pertenece a este diseño:
+# aquí el rojo significa "este jugador ha bajado de precio" y nada más.
+# El resto del aspecto vive en src/fantasy/dashboard/ui.py.
+
+[theme]
+base = "light"
+primaryColor = "#0B0D0E"
+backgroundColor = "#F7F8F9"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#15181A"
+
 [server]
 headless = true
 port = 8501

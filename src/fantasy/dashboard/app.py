@@ -1,11 +1,13 @@
-"""Dashboard interactivo para análisis de mercado de LaLiga Fantasy en Streamlit.
+"""Panel de análisis de mercado de LaLiga Fantasy.
 
-Diseño visual premium estilo Fantasy: Glassmorphism, Dark UI, fotos de futbolistas,
-ranking 1..N, formato de dinero compacto (900k, 130M, etc.), badges de posición,
-gráficos interactivos con Plotly de rendimiento histórico por jornada y cotización de mercado.
+Este módulo decide QUÉ se muestra; el sistema de diseño vive en `ui.py` y decide
+CÓMO se ve. Las tablas se componen como HTML propio en vez de `st.dataframe`
+porque ésta no admite fotos, chips de demarcación ni cifras coloreadas, que es
+justo lo que hace legible un listado de 800 jugadores.
 """
 
 from datetime import date, datetime
+from html import escape
 import textwrap
 import streamlit as st
 import pandas as pd
@@ -16,13 +18,14 @@ from supabase import create_client
 from fantasy import config
 from fantasy.store.supabase import fetch_all
 from fantasy.analytics.money import calculate_estimated_cash, suggest_initial_balance
+from fantasy.dashboard import ui
 
 # Configuración de página
 st.set_page_config(
-    page_title="LaLiga Fantasy — Pro Analytics",
+    page_title="LaLiga Fantasy",
     page_icon="⚽",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="auto",
 )
 
 
@@ -31,231 +34,11 @@ def render_html(html_str: str) -> None:
     st.html(textwrap.dedent(html_str).strip())
 
 
-# =============================================================================
-# ESTILOS CSS PERSONALIZADOS (THEME FANTASY DARK & NEON)
-# =============================================================================
-FANTASY_CSS = """
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
-
-html, body, [class*="css"] {
-    font-family: 'Plus Jakarta Sans', sans-serif;
-}
-
-h1, h2, h3, h4, .fantasy-font {
-    font-family: 'Outfit', sans-serif;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-}
-
-/* Header Banner */
-.fantasy-hero {
-    background: linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(30, 27, 75, 0.9) 50%, rgba(15, 23, 42, 0.95) 100%);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 20px;
-    padding: 22px 28px;
-    margin-bottom: 20px;
-    box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.5);
-    position: relative;
-    overflow: hidden;
-}
-
-.fantasy-hero::before {
-    content: '';
-    position: absolute;
-    top: -50%;
-    right: -20%;
-    width: 350px;
-    height: 350px;
-    background: radial-gradient(circle, rgba(239, 68, 68, 0.2) 0%, transparent 70%);
-    pointer-events: none;
-}
-
-.hero-title {
-    font-size: 2.1rem;
-    font-weight: 800;
-    background: linear-gradient(90deg, #ffffff 0%, #cbd5e1 50%, #f43f5e 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    margin: 0;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-}
-
-.hero-subtitle {
-    color: #94a3b8;
-    font-size: 0.92rem;
-    margin-top: 4px;
-}
-
-/* Stat Cards */
-.stat-card {
-    background: rgba(30, 41, 59, 0.7);
-    backdrop-filter: blur(12px);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 16px;
-    padding: 16px 18px;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
-    transition: transform 0.2s ease, border-color 0.2s ease;
-}
-
-.stat-card:hover {
-    transform: translateY(-2px);
-    border-color: rgba(255, 255, 255, 0.2);
-}
-
-.stat-card-title {
-    color: #94a3b8;
-    font-size: 0.75rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    margin-bottom: 4px;
-}
-
-.stat-card-value {
-    color: #ffffff;
-    font-size: 1.35rem;
-    font-weight: 800;
-    font-family: 'Outfit', sans-serif;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.stat-card-delta {
-    font-size: 0.8rem;
-    font-weight: 600;
-    margin-top: 4px;
-}
-
-/* Position Badges */
-.pos-badge {
-    display: inline-block;
-    padding: 3px 8px;
-    border-radius: 6px;
-    font-size: 0.75rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-}
-.pos-por { background: rgba(234, 179, 8, 0.15); color: #facc15; border: 1px solid rgba(234, 179, 8, 0.3); }
-.pos-def { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
-.pos-med { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
-.pos-del { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
-.pos-ent { background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); }
-
-/* Market status badge */
-.badge-market-active {
-    background: linear-gradient(135deg, rgba(16, 185, 129, 0.2) 0%, rgba(5, 150, 105, 0.3) 100%);
-    border: 1px solid rgba(16, 185, 129, 0.4);
-    color: #34d399;
-    padding: 4px 10px;
-    border-radius: 9999px;
-    font-size: 0.75rem;
-    font-weight: 700;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    box-shadow: 0 0 12px rgba(16, 185, 129, 0.2);
-}
-
-/* Player Mini Cards */
-.player-highlight-card {
-    background: linear-gradient(145deg, rgba(30, 41, 59, 0.9) 0%, rgba(15, 23, 42, 0.9) 100%);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 16px;
-    padding: 18px;
-    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
-    position: relative;
-    overflow: hidden;
-    transition: all 0.25s ease;
-}
-
-.player-highlight-card:hover {
-    transform: translateY(-4px);
-    border-color: rgba(244, 63, 94, 0.4);
-    box-shadow: 0 10px 30px rgba(244, 63, 94, 0.15);
-}
-
-.player-card-img {
-    width: 68px;
-    height: 68px;
-    border-radius: 50%;
-    object-fit: cover;
-    background: rgba(255, 255, 255, 0.05);
-    border: 2px solid rgba(255, 255, 255, 0.15);
-}
-
-.player-card-name {
-    font-size: 1.05rem;
-    font-weight: 700;
-    color: #ffffff;
-    margin-top: 8px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.player-card-team {
-    font-size: 0.8rem;
-    color: #94a3b8;
-}
-
-.player-card-price {
-    font-size: 1.15rem;
-    font-weight: 800;
-    color: #ffffff;
-    font-family: 'Outfit', sans-serif;
-    margin-top: 6px;
-}
-
-.pill-up {
-    color: #34d399;
-    background: rgba(16, 185, 129, 0.15);
-    border: 1px solid rgba(16, 185, 129, 0.3);
-    padding: 2px 8px;
-    border-radius: 6px;
-    font-size: 0.8rem;
-    font-weight: 700;
-    display: inline-block;
-}
-
-.pill-down {
-    color: #f87171;
-    background: rgba(239, 68, 68, 0.15);
-    border: 1px solid rgba(239, 68, 68, 0.3);
-    padding: 2px 8px;
-    border-radius: 6px;
-    font-size: 0.8rem;
-    font-weight: 700;
-    display: inline-block;
-}
-
-/* Custom Podium */
-.podium-card {
-    background: rgba(30, 41, 59, 0.8);
-    border-radius: 16px;
-    padding: 20px;
-    text-align: center;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-}
-.podium-1 {
-    border-color: rgba(234, 179, 8, 0.4);
-    box-shadow: 0 0 25px rgba(234, 179, 8, 0.15);
-    background: linear-gradient(180deg, rgba(234, 179, 8, 0.1) 0%, rgba(30, 41, 59, 0.9) 100%);
-}
-.podium-2 {
-    border-color: rgba(203, 213, 225, 0.3);
-}
-.podium-3 {
-    border-color: rgba(217, 119, 6, 0.3);
-}
-</style>
-"""
 
 NO_PLAYER_IMG = "https://assets-fantasy.llt-services.com/players/no-player/no-player-sq_256.png"
+
+# Celda sin dato. Un guion gris, nunca un cero: no es lo mismo "no jugó" que "jugó 0".
+MUTED_DASH = '<span class="muted">—</span>'
 
 
 @st.cache_resource
@@ -369,13 +152,13 @@ def load_league_data(df_players: pd.DataFrame | None = None) -> tuple[pd.DataFra
     )
 
     type_descriptions = {
-        1: "💰 Compra / Clausulazo",
-        2: "🤝 Venta a rival",
-        31: "🛒 Compra en mercado",
-        33: "💸 Venta al mercado",
-        6: "🏆 Premio de jornada",
-        9: "📋 Alineación confirmada",
-        10: "🔄 Cambio alineación",
+        1: "Compra o clausulazo",
+        2: "Venta a un rival",
+        31: "Compra en el mercado",
+        33: "Venta al mercado",
+        6: "Premio de jornada",
+        9: "Alineación confirmada",
+        10: "Cambio de alineación",
     }
 
     mov_rows = []
@@ -426,22 +209,6 @@ def load_league_data(df_players: pd.DataFrame | None = None) -> tuple[pd.DataFra
     return df_standings, df_movements, league_names
 
 
-def get_position_class(pos_name: str | None) -> str:
-    """Devuelve la clase CSS correspondiente a cada posición."""
-    if not pos_name:
-        return "pos-badge pos-med"
-    p = pos_name.lower()
-    if "porter" in p or "por" in p:
-        return "pos-badge pos-por"
-    elif "def" in p:
-        return "pos-badge pos-def"
-    elif "med" in p or "centr" in p:
-        return "pos-badge pos-med"
-    elif "del" in p:
-        return "pos-badge pos-del"
-    return "pos-badge pos-ent"
-
-
 def format_points(val: int | float | None) -> str:
     """Formatea puntos. La API devuelve null para equipos sin puntuar: eso es "sin datos", no un cero."""
     if val is None or pd.isna(val):
@@ -450,6 +217,30 @@ def format_points(val: int | float | None) -> str:
         return f"{float(val):g}"
     except (ValueError, TypeError):
         return str(val)
+
+
+def style_chart(fig, title: str = "") -> None:
+    """Aplica el tema del panel a una figura de Plotly.
+
+    Plotly trae su propia tipografía, su rejilla y su caja de hover. Sin esto el
+    gráfico sería lo único de la página que no pertenece al diseño.
+    """
+    fig.update_layout(
+        template="plotly_white",
+        title=dict(text=title or "", font=dict(size=14, family="Barlow Condensed, sans-serif")),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor=ui.TOKENS["paper"],
+        font=dict(family="Barlow, system-ui, sans-serif", size=13, color=ui.TOKENS["text"]),
+        margin=dict(l=10, r=10, t=34, b=10),
+        hoverlabel=dict(
+            bgcolor=ui.TOKENS["ink"],
+            bordercolor=ui.TOKENS["ink"],
+            font=dict(family="Barlow, sans-serif", color="#FFFFFF", size=13),
+        ),
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"),
+    )
+    fig.update_xaxes(showgrid=False, linecolor=ui.TOKENS["line"], ticks="outside", tickcolor=ui.TOKENS["line"])
+    fig.update_yaxes(gridcolor=ui.TOKENS["line"], linecolor=ui.TOKENS["line"], zeroline=False)
 
 
 def format_money(val: int | float | None, with_sign: bool = False) -> str:
@@ -493,12 +284,12 @@ def format_money(val: int | float | None, with_sign: bool = False) -> str:
 
 def main():
     # Inyectar estilos personalizados
-    render_html(FANTASY_CSS)
+    render_html(ui.CSS)
 
     # Validar que Supabase esté configurado
     if not config.SUPABASE_URL or not config.SUPABASE_SERVICE_KEY:
         st.error(
-            "⚠️ Faltan las variables de entorno de Supabase (`SUPABASE_URL` y `SUPABASE_SERVICE_KEY`).\n"
+            "Faltan las variables de entorno de Supabase (`SUPABASE_URL` y `SUPABASE_SERVICE_KEY`).\n"
             "Configúralas en tu archivo `.env` para visualizar los datos."
         )
         st.stop()
@@ -510,13 +301,13 @@ def main():
             df_standings, df_movements, league_names = load_league_data(df_players)
             df_gw = load_gameweek_stats()
     except Exception as e:
-        st.error(f"❌ Error al conectar con Supabase: {e}")
+        st.error(f"Error al conectar con Supabase: {e}")
         st.stop()
 
     # Si no hay datos todavía
     if df_players.empty or df_daily.empty:
         st.info(
-            "ℹ️ **Aún no hay datos en la base de datos.**\n\n"
+            "**Aún no hay datos en la base de datos.**\n\n"
             "1. Asegúrate de haber ejecutado la migración DDL en Supabase (`db/migrations/001_init.sql`).\n"
             "2. Inicia sesión con `python scripts/login.py` (Apple, Google o email).\n"
             "3. Ejecuta el primer snapshot diario en tu terminal:\n"
@@ -548,38 +339,26 @@ def main():
                     "market_id": r.get("market_id"),
                 }
 
-    # Header Hero Banner
     render_html(
-        f"""
-        <div class="fantasy-hero">
-            <div class="hero-title">
-                <span>⚽ LALIGA FANTASY</span>
-                <span style="font-size: 0.8rem; font-weight: 800; background: #e11d48; color: #ffffff; padding: 4px 12px; border-radius: 9999px; letter-spacing: 0.05em; display: inline-block;">PRO ANALYTICS</span>
-            </div>
-            <div class="hero-subtitle">
-                Seguimiento de mercado en vivo · Snapshots diarios · Estimación de caja y probabilidad de alineación
-            </div>
-        </div>
-        """
+        ui.masthead(
+            "LaLiga Fantasy",
+            [
+                ("calendar", "Snapshot", str(latest_date)),
+                ("chart", "Histórico", f"{num_days} días"),
+                ("shirt", "Jugadores", f"{len(df_players)}"),
+                ("pitch", "Equipos", f"{len(df_teams)}"),
+            ],
+        )
     )
 
     # Barra lateral de métricas y filtros
-    st.sidebar.markdown("### ⚙️ Centro de Control")
-    st.sidebar.caption(f"📅 Snapshot activo: **{latest_date}** ({num_days} días acumulados)")
+    st.sidebar.markdown("#### Filtros")
 
     # Mapeo de equipos
     teams_dict = dict(zip(df_teams["id"].astype(str), df_teams["name"]))
     df_players["team_name"] = df_players["team_id"].astype(str).map(teams_dict).fillna("Sin equipo")
 
-    # Filtro por mercado actual en sidebar
-    solo_mercado_sidebar = st.sidebar.checkbox(
-        "🎯 **Solo mercado actual**",
-        value=False,
-        help="Muestra únicamente los jugadores que están a la venta hoy en tu liga privada.",
-    )
 
-    st.sidebar.divider()
-    st.sidebar.markdown("### 🔍 Filtros Globales")
 
     # Filtro por posición
     positions = ["Todas"] + sorted([p for p in df_players["position"].dropna().unique() if p])
@@ -592,15 +371,17 @@ def main():
     # Rango de precio
     df_latest = df_daily[df_daily["snapshot_date"].dt.date == latest_date].copy()
     max_market_val = int(df_latest["market_value"].dropna().max()) if not df_latest.empty else 100_000_000
-    rango_precio = st.sidebar.slider(
-        "Rango de Valor",
+    max_millones = max(1, -(-max_market_val // 1_000_000))
+    rango_millones = st.sidebar.slider(
+        "Rango de valor",
         min_value=0,
-        max_value=max_market_val,
-        value=(0, max_market_val),
-        step=500_000,
-        format="%d €",
-        help=f"Filtra jugadores con valor hasta {format_money(max_market_val)}",
+        max_value=max_millones,
+        value=(0, max_millones),
+        step=1,
+        format="%d M",
+        help=f"El jugador más caro vale {format_money(max_market_val)}.",
     )
+    rango_precio = (rango_millones[0] * 1_000_000, rango_millones[1] * 1_000_000)
 
     # Búsqueda por texto
     search_query = st.sidebar.text_input("Buscar jugador", "").strip().lower()
@@ -634,7 +415,6 @@ def main():
 
     # Añadir columna indicadora de mercado actual
     df_market["en_mercado"] = df_market["id"].astype(str).isin(market_player_ids)
-    df_market["estado_mercado"] = df_market["en_mercado"].apply(lambda x: "🟢 EN VENTA" if x else "—")
     df_market["foto"] = df_market["image_url"].fillna(NO_PLAYER_IMG)
     df_market["fin_subasta"] = df_market["id"].astype(str).map(
         lambda pid: market_info_map.get(pid, {}).get("expires_at") if pid in market_info_map else None
@@ -645,11 +425,10 @@ def main():
         df_market = df_market[df_market["position"] == sel_position]
     if sel_team != "Todos":
         df_market = df_market[df_market["team_name"] == sel_team]
-    if rango_precio:
-        df_market = df_market[
-            (df_market["market_value"].fillna(0) >= rango_precio[0])
-            & (df_market["market_value"].fillna(0) <= rango_precio[1])
-        ]
+    df_market = df_market[
+        (df_market["market_value"].fillna(0) >= rango_precio[0])
+        & (df_market["market_value"].fillna(0) <= rango_precio[1])
+    ]
     if search_query:
         df_market = df_market[
             df_market["name"].str.lower().str.contains(search_query, na=False)
@@ -659,10 +438,10 @@ def main():
     # Pestañas principales
     tab_market, tab_evolution, tab_minutes, tab_league = st.tabs(
         [
-            "💰 Mercado & Tendencias",
-            "📈 Evolución y Rendimiento",
-            "⏱️ Minutos y Titularidad",
-            "🏆 Liga Privada & Caja",
+            "Mercado",
+            "Jugador",
+            "Minutos",
+            "Liga privada",
         ]
     )
 
@@ -670,241 +449,196 @@ def main():
     # PESTAÑA 1: MERCADO Y TENDENCIAS (MUY PRÁCTICO + FOTOS + RANKING + DINERO COMPACTO)
     # =========================================================================
     with tab_market:
-        col_ctrl1, col_ctrl2 = st.columns([1.2, 2.8])
-        with col_ctrl1:
-            solo_mercado_tab = st.checkbox(
-                "🎯 **Solo mercado actual** (en venta en mi liga)",
-                value=solo_mercado_sidebar,
-                key="chk_actual_mercado",
-                help="Filtra para ver únicamente los jugadores que están a la venta hoy en tu liga privada.",
-            )
+        solo_mercado_tab = st.checkbox(
+            "Solo lo que está en venta hoy en mi liga",
+            value=False,
+            key="chk_actual_mercado",
+            help="Deja solo los futbolistas con puja abierta ahora mismo en tu liga privada.",
+        )
 
-        filter_active_market = solo_mercado_sidebar or solo_mercado_tab
+        filter_active_market = solo_mercado_tab
         df_view = df_market[df_market["en_mercado"]].copy() if filter_active_market else df_market.copy()
 
-        # Selector de ordenación dinámico y muy práctico
-        with col_ctrl2:
-            if has_variation:
-                opciones_orden = [
-                    "🚀 Mayor subida (%)",
-                    "💶 Mayor subida (€)",
-                    "💎 Mayor valor (€)",
-                    "🔻 Mayor caída (%)",
-                    "🏆 Más puntos",
-                    "📈 Mejor media",
-                    "🔤 Nombre (A-Z)",
-                ]
-            else:
-                opciones_orden = [
-                    "💎 Mayor valor (€)",
-                    "🏆 Más puntos",
-                    "📈 Mejor media",
-                    "🔤 Nombre (A-Z)",
-                ]
-            sel_orden = st.radio("Ordenar ranking por:", opciones_orden, horizontal=True)
-
-        # KPIs superiores estilizados con formato compacto
-        kpi_c1, kpi_c2, kpi_c3, kpi_c4 = st.columns(4)
-        total_mkt_active = len(df_view[df_view["en_mercado"]])
-
         if has_variation:
-            df_valid_pct = df_view.dropna(subset=["pct_change"])
-            if not df_valid_pct.empty:
-                top_pct_up = df_valid_pct.sort_values(by="pct_change", ascending=False).iloc[0]
-                top_eur_up = df_valid_pct.sort_values(by="diff_value", ascending=False).iloc[0]
-                top_pct_down = df_valid_pct.sort_values(by="pct_change", ascending=True).iloc[0]
-
-                with kpi_c1:
-                    render_html(
-                        f"""
-                        <div class="stat-card">
-                            <div class="stat-card-title">🚀 Mayor Subida (%)</div>
-                            <div class="stat-card-value" style="color: #34d399;">{top_pct_up['name']}</div>
-                            <div class="stat-card-delta pill-up">+{top_pct_up['pct_change']:.2f} % ({format_money(top_pct_up['diff_value'], with_sign=True)})</div>
-                        </div>
-                        """
-                    )
-                with kpi_c2:
-                    render_html(
-                        f"""
-                        <div class="stat-card">
-                            <div class="stat-card-title">💶 Mayor Subida (€)</div>
-                            <div class="stat-card-value" style="color: #60a5fa;">{top_eur_up['name']}</div>
-                            <div class="stat-card-delta pill-up">{format_money(top_eur_up['diff_value'], with_sign=True)} (+{top_eur_up['pct_change']:.2f} %)</div>
-                        </div>
-                        """
-                    )
-                with kpi_c3:
-                    render_html(
-                        f"""
-                        <div class="stat-card">
-                            <div class="stat-card-title">🔻 Mayor Caída (%)</div>
-                            <div class="stat-card-value" style="color: #f87171;">{top_pct_down['name']}</div>
-                            <div class="stat-card-delta pill-down">{top_pct_down['pct_change']:.2f} % ({format_money(top_pct_down['diff_value'], with_sign=True)})</div>
-                        </div>
-                        """
-                    )
-                with kpi_c4:
-                    render_html(
-                        f"""
-                        <div class="stat-card">
-                            <div class="stat-card-title">🎯 En Mercado Activo</div>
-                            <div class="stat-card-value" style="color: #facc15;">{total_mkt_active} <span style="font-size: 0.9rem; font-weight: 500; color: #94a3b8;">jugadores</span></div>
-                            <div class="stat-card-delta" style="color: #94a3b8;">Disponibles para puja</div>
-                        </div>
-                        """
-                    )
+            opciones_orden = [
+                "Subida %",
+                "Subida €",
+                "Valor",
+                "Caída %",
+                "Puntos",
+                "Media",
+                "Nombre",
+            ]
         else:
-            with kpi_c1:
-                render_html(
-                    f"""
-                    <div class="stat-card">
-                        <div class="stat-card-title">🎯 En Mercado Activo</div>
-                        <div class="stat-card-value" style="color: #34d399;">{len(market_player_ids)} <span style="font-size: 0.9rem; font-weight: 500; color: #94a3b8;">jugadores</span></div>
-                        <div class="stat-card-delta" style="color: #94a3b8;">A la venta en tu liga</div>
-                    </div>
-                    """
-                )
-            with kpi_c2:
-                render_html(
-                    f"""
-                    <div class="stat-card">
-                        <div class="stat-card-title">👥 Total Jugadores</div>
-                        <div class="stat-card-value" style="color: #60a5fa;">{len(df_players)}</div>
-                        <div class="stat-card-delta" style="color: #94a3b8;">En la base de datos</div>
-                    </div>
-                    """
-                )
-            with kpi_c3:
-                render_html(
-                    f"""
-                    <div class="stat-card">
-                        <div class="stat-card-title">🛡️ Equipos</div>
-                        <div class="stat-card-value" style="color: #facc15;">{len(df_teams)}</div>
-                        <div class="stat-card-delta" style="color: #94a3b8;">Primera división</div>
-                    </div>
-                    """
-                )
-            with kpi_c4:
-                render_html(
-                    f"""
-                    <div class="stat-card">
-                        <div class="stat-card-title">📅 Snapshots</div>
-                        <div class="stat-card-value" style="color: #c084fc;">{num_days} <span style="font-size: 0.9rem; font-weight: 500; color: #94a3b8;">día</span></div>
-                        <div class="stat-card-delta" style="color: #94a3b8;">Día 1 registrado</div>
-                    </div>
-                    """
-                )
+            opciones_orden = ["Valor", "Puntos", "Media", "Nombre"]
+        sel_orden = st.radio("Ordenar por", opciones_orden, horizontal=True)
 
-        st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
+        # Cifras de cabecera en una sola fila con filetes: cuatro tarjetas
+        # idénticas serían el andamio perezoso, y aquí el protagonista es la tabla.
+        total_mkt_active = len(df_view[df_view["en_mercado"]])
+        df_valid_pct = df_view.dropna(subset=["pct_change"]) if has_variation else df_view.iloc[0:0]
 
-        # Destacados en tarjetas visuales (Top 4 del mercado activo)
-        if filter_active_market and not df_view.empty:
-            st.markdown("#### 🌟 Destacados en Venta Hoy")
-            cols_top = st.columns(min(4, len(df_view)))
-            top_sample = df_view.sort_values("market_value", ascending=False).head(4)
-            for i, (_, row) in enumerate(top_sample.iterrows()):
-                with cols_top[i]:
-                    img_url = row.get("image_url") or NO_PLAYER_IMG
-                    pos_cls = get_position_class(row.get("position"))
-                    pct_str = f"+{row['pct_change']:.2f}%" if pd.notnull(row.get("pct_change")) and row["pct_change"] > 0 else (f"{row['pct_change']:.2f}%" if pd.notnull(row.get("pct_change")) else "Activo")
-                    render_html(
-                        f"""
-                        <div class="player-highlight-card">
-                            <div style="display: flex; justify-content: space-between; align-items: center;">
-                                <span class="{pos_cls}">{row.get('position', 'JUG')}</span>
-                                <span class="badge-market-active">🟢 EN VENTA</span>
-                            </div>
-                            <div style="text-align: center; margin-top: 8px;">
-                                <img src="{img_url}" class="player-card-img" />
-                                <div class="player-card-name">{row['name']}</div>
-                                <div class="player-card-team">{row['team_name']}</div>
-                                <div class="player-card-price">{format_money(row['market_value'])}</div>
-                                <div style="margin-top: 6px;"><span class="pill-up">{pct_str}</span></div>
-                            </div>
-                        </div>
-                        """
-                    )
-            st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
+        if has_variation and not df_valid_pct.empty:
+            top_pct_up = df_valid_pct.sort_values(by="pct_change", ascending=False).iloc[0]
+            top_eur_up = df_valid_pct.sort_values(by="diff_value", ascending=False).iloc[0]
+            top_pct_down = df_valid_pct.sort_values(by="pct_change", ascending=True).iloc[0]
+            render_html(
+                ui.stat_row(
+                    [
+                        (
+                            "Mayor subida %",
+                            escape(str(top_pct_up["name"])),
+                            f"{top_pct_up['pct_change']:+.2f}%".replace(".", ",")
+                            + f" · {format_money(top_pct_up['diff_value'], with_sign=True)}",
+                            "up",
+                        ),
+                        (
+                            "Mayor subida €",
+                            escape(str(top_eur_up["name"])),
+                            format_money(top_eur_up["diff_value"], with_sign=True)
+                            + f" · {top_eur_up['pct_change']:+.2f}%".replace(".", ","),
+                            "up",
+                        ),
+                        (
+                            "Mayor caída %",
+                            escape(str(top_pct_down["name"])),
+                            f"{top_pct_down['pct_change']:+.2f}%".replace(".", ",")
+                            + f" · {format_money(top_pct_down['diff_value'], with_sign=True)}",
+                            "down",
+                        ),
+                        ("En venta en tu liga", f"{total_mkt_active}", "con puja abierta", ""),
+                    ]
+                )
+            )
+        else:
+            render_html(
+                ui.stat_row(
+                    [
+                        ("En venta en tu liga", f"{len(market_player_ids)}", "con puja abierta", ""),
+                        ("Jugadores", f"{len(df_players)}", "en la base de datos", ""),
+                        ("Equipos", f"{len(df_teams)}", "de Primera", ""),
+                        ("Histórico", f"{num_days}", "día registrado" if num_days == 1 else "días acumulados", ""),
+                    ]
+                )
+            )
+
+
 
         if not has_variation:
-            st.info(
-                "💡 **Aún no hay histórico suficiente para calcular variación temporal.** "
-                "Con un único día registrado se muestra el precio actual. Las variaciones porcentuales (% subida) "
-                "se calcularán automáticamente a partir del segundo snapshot diario."
+            render_html(
+                ui.notice(
+                    "Con un solo día registrado no hay con qué comparar, así que todavía no se "
+                    "puede calcular la variación. Aparece sola a partir del segundo snapshot."
+                )
             )
 
         # ORDENACIÓN DEL RANKING
         if has_variation:
-            if sel_orden == "🚀 Mayor subida (%)":
+            if sel_orden == "Subida %":
                 df_sorted = df_view.sort_values(by="pct_change", ascending=False, na_position="last")
-            elif sel_orden == "💶 Mayor subida (€)":
+            elif sel_orden == "Subida €":
                 df_sorted = df_view.sort_values(by="diff_value", ascending=False, na_position="last")
-            elif sel_orden == "💎 Mayor valor (€)":
+            elif sel_orden == "Valor":
                 df_sorted = df_view.sort_values(by="market_value", ascending=False, na_position="last")
-            elif sel_orden == "🔻 Mayor caída (%)":
+            elif sel_orden == "Caída %":
                 df_sorted = df_view.sort_values(by="pct_change", ascending=True, na_position="last")
-            elif sel_orden == "🏆 Más puntos":
+            elif sel_orden == "Puntos":
                 df_sorted = df_view.sort_values(by="points", ascending=False, na_position="last")
-            elif sel_orden == "📈 Mejor media":
+            elif sel_orden == "Media":
                 df_sorted = df_view.sort_values(by="average_points", ascending=False, na_position="last")
             else:
                 df_sorted = df_view.sort_values(by="name", ascending=True)
         else:
-            if sel_orden == "💎 Mayor valor (€)":
+            if sel_orden == "Valor":
                 df_sorted = df_view.sort_values(by="market_value", ascending=False, na_position="last")
-            elif sel_orden == "🏆 Más puntos":
+            elif sel_orden == "Puntos":
                 df_sorted = df_view.sort_values(by="points", ascending=False, na_position="last")
-            elif sel_orden == "📈 Mejor media":
+            elif sel_orden == "Media":
                 df_sorted = df_view.sort_values(by="average_points", ascending=False, na_position="last")
             else:
                 df_sorted = df_view.sort_values(by="name", ascending=True)
 
-        # Generar columna de ranking 1, 2, 3, 4, 5... y formato compacto de dinero (900k, 130M...)
         df_display = df_sorted.reset_index(drop=True)
         df_display["rank"] = df_display.index + 1
-        df_display["valor_fmt"] = df_display["market_value"].apply(lambda v: format_money(v))
+
+        # La barra dentro de la celda de variación se escala al mayor movimiento
+        # de ESTA vista, no de toda la liga: lo que se compara es lo que se ve.
+        max_abs_pct = 0.0
+        if has_variation and df_display["pct_change"].notna().any():
+            max_abs_pct = float(df_display["pct_change"].abs().max())
+
+        LIMITE_FILAS = 250
+        df_page = df_display.head(LIMITE_FILAS)
+
+        columns = [
+            {"label": "#", "align": "right", "cls": "rk"},
+            {"label": "Jugador", "align": "left"},
+            {"label": "Valor", "align": "right", "cls": "num"},
+        ]
         if has_variation:
-            df_display["diff_fmt"] = df_display["diff_value"].apply(lambda v: format_money(v, with_sign=True))
+            columns.append({"label": "Variación", "align": "right"})
+        columns += [
+            {"label": "Pts", "align": "right", "cls": "num"},
+            {"label": "Media", "align": "right", "cls": "num hide-sm"},
+            {"label": "Mercado", "align": "center", "cls": "hide-sm"},
+        ]
 
-        # Columnas a mostrar
-        display_cols = ["rank", "foto", "name", "nickname", "team_name", "position", "valor_fmt", "points", "average_points", "estado_mercado"]
-        if has_variation:
-            display_cols = ["rank", "foto", "name", "nickname", "team_name", "position", "valor_fmt", "pct_change", "diff_fmt", "points", "average_points", "estado_mercado"]
+        rows = []
+        for _, r in df_page.iterrows():
+            cells = [
+                str(int(r["rank"])),
+                ui.player_cell(
+                    r["name"], r.get("team_name"), r.get("position"), r.get("image_url") or NO_PLAYER_IMG
+                ),
+                format_money(r.get("market_value")),
+            ]
+            if has_variation:
+                pct = r.get("pct_change")
+                pct_val = float(pct) if pd.notnull(pct) else None
+                ratio = (abs(pct_val) / max_abs_pct) if (pct_val is not None and max_abs_pct) else 0.0
+                cells.append(
+                    ui.delta_cell(
+                        format_money(r.get("diff_value"), with_sign=True), pct_val, ratio
+                    )
+                )
+            cells += [
+                format_points(r.get("points")),
+                f"{r['average_points']:.2f}".replace(".", ",")
+                if pd.notnull(r.get("average_points"))
+                else '<span class="muted">—</span>',
+                ui.tag("En venta", "live")
+                if r.get("en_mercado")
+                else '<span class="muted">—</span>',
+            ]
+            rows.append(cells)
 
-        col_config = {
-            "rank": st.column_config.NumberColumn("#", help="Posición en el ranking", format="%d", width="small"),
-            "foto": st.column_config.ImageColumn("Foto", help="Foto del futbolista", width="small"),
-            "name": st.column_config.TextColumn("Nombre"),
-            "nickname": st.column_config.TextColumn("Apodo"),
-            "team_name": st.column_config.TextColumn("Equipo"),
-            "position": st.column_config.TextColumn("Posición"),
-            "valor_fmt": st.column_config.TextColumn("Valor", help="Valor de mercado en formato compacto (k/M)"),
-            "pct_change": st.column_config.NumberColumn("Subida (%)", format="%+.2f %%"),
-            "diff_fmt": st.column_config.TextColumn("Variación (€)", help="Variación en dinero compacto (k/M)"),
-            "points": st.column_config.NumberColumn("Puntos"),
-            "average_points": st.column_config.NumberColumn("Media", format="%.2f"),
-            "estado_mercado": st.column_config.TextColumn("Mercado Liga"),
-        }
-
-        st.caption(f"📋 Mostrando **{len(df_display)}** futbolistas ordenados por **{sel_orden}**")
-        st.dataframe(
-            df_display[display_cols],
-            column_config=col_config,
-            use_container_width=True,
-            hide_index=True,
-            height=600,
+        mostrados = len(df_page)
+        de_mas = f" de {len(df_display)}" if len(df_display) > mostrados else ""
+        render_html(
+            ui.section(
+                "Mercado",
+                "wallet",
+                f"{mostrados}{de_mas} futbolistas, ordenados por {sel_orden.lower()}.",
+            )
         )
+        render_html(ui.data_table(columns, rows))
 
     # =========================================================================
     # PESTAÑA 2: EVOLUCIÓN Y RENDIMIENTO HISTÓRICO (GRÁFICAS INTERACTIVAS)
     # =========================================================================
     with tab_evolution:
-        st.subheader("📈 Rendimiento Histórico por Jornada y Cotización")
+        render_html(
+            ui.section(
+                "Ficha del jugador",
+                "chart",
+                "Puntos y minutos jornada a jornada, y la cotización acumulada desde que el panel registra datos.",
+            )
+        )
 
         player_options = df_players.set_index("id")["name"].to_dict()
         selected_player_id = st.selectbox(
-            "Selecciona un jugador para analizar:",
+            "Jugador",
+            placeholder="Busca o elige un futbolista",
             options=list(player_options.keys()),
             format_func=lambda x: f"{player_options[x]} ({df_players[df_players['id'] == x]['team_name'].values[0]})",
         )
@@ -915,9 +649,7 @@ def main():
             p_info = df_players[df_players["id"] == str(selected_player_id)].iloc[0]
 
             img_url = p_info.get("image_url") or NO_PLAYER_IMG
-            pos_cls = get_position_class(p_info.get("position"))
             is_on_sale = str(selected_player_id) in market_player_ids
-            mkt_badge_html = '<span class="badge-market-active" style="margin-left: 8px;">🟢 EN VENTA EN TU LIGA</span>' if is_on_sale else ""
             last_val = df_p_history.iloc[-1]["market_value"] if not df_p_history.empty else 0
 
             # Métricas agregadas
@@ -927,158 +659,164 @@ def main():
             tot_goals = int(df_p_gw["goals"].sum()) if not df_p_gw.empty else 0
             tot_saves = int(df_p_gw["saves"].sum()) if not df_p_gw.empty else 0
 
-            col_pcard, col_pchart = st.columns([1, 2])
+            render_html(
+                ui.player_header(
+                    p_info["name"],
+                    p_info.get("team_name"),
+                    p_info.get("position"),
+                    img_url,
+                    extra=ui.tag("En venta en tu liga", "live") if is_on_sale else "",
+                )
+            )
+            render_html(
+                ui.stat_row(
+                    [
+                        ("Valor", format_money(last_val), escape(str(p_info.get("status") or "").capitalize()), ""),
+                        ("Puntos", f"{tot_pts}", f"media {avg_pts:.2f}".replace(".", ","), ""),
+                        ("Minutos", f"{tot_mins}", f"en {len(df_p_gw)} jornadas", ""),
+                        (
+                            "Goles",
+                            f"{tot_goals}",
+                            f"{tot_saves} paradas" if tot_saves else "",
+                            "",
+                        ),
+                    ]
+                )
+            )
 
-            with col_pcard:
+            if not df_p_gw.empty:
+                fig_gw = make_subplots(specs=[[{"secondary_y": True}]])
+                fig_gw.add_trace(
+                    go.Bar(
+                        x=[f"J{gw}" for gw in df_p_gw["gameweek"]],
+                        y=df_p_gw["points"],
+                        name="Puntos",
+                        marker_color=ui.TOKENS["ink"],
+                        hovertemplate="<b>Jornada %{x}</b><br>%{y} puntos<extra></extra>",
+                    ),
+                    secondary_y=False,
+                )
+                fig_gw.add_trace(
+                    go.Scatter(
+                        x=[f"J{gw}" for gw in df_p_gw["gameweek"]],
+                        y=df_p_gw["minutes"],
+                        name="Minutos",
+                        mode="lines+markers",
+                        line=dict(color=ui.TOKENS["focus"], width=2),
+                        marker=dict(size=6, color=ui.TOKENS["focus"]),
+                        hovertemplate="%{y} min de 90<extra></extra>",
+                    ),
+                    secondary_y=True,
+                )
+                style_chart(fig_gw)
+                fig_gw.update_yaxes(title_text="Puntos", secondary_y=False)
+                fig_gw.update_yaxes(title_text="Minutos", range=[0, 105], secondary_y=True)
+                st.plotly_chart(fig_gw, use_container_width=True)
+            else:
                 render_html(
-                    f"""
-                    <div class="player-highlight-card">
-                        <div style="display: flex; align-items: center; gap: 16px;">
-                            <img src="{img_url}" class="player-card-img" style="width: 80px; height: 80px;" />
-                            <div>
-                                <div style="display: flex; align-items: center;">
-                                    <span class="{pos_cls}">{p_info.get('position', 'JUG')}</span>
-                                    {mkt_badge_html}
-                                </div>
-                                <div style="font-size: 1.3rem; font-weight: 800; color: white; margin-top: 4px;">{p_info['name']}</div>
-                                <div style="color: #94a3b8; font-size: 0.9rem;">{p_info['team_name']}</div>
-                            </div>
-                        </div>
-                        <hr style="border: 0; border-top: 1px solid rgba(255, 255, 255, 0.08); margin: 14px 0;" />
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-                            <div>
-                                <div style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase;">Valor Actual</div>
-                                <div style="font-size: 1.25rem; font-weight: 800; color: #ffffff;">{format_money(last_val)}</div>
-                            </div>
-                            <div>
-                                <div style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase;">Estado</div>
-                                <div style="font-size: 1rem; font-weight: 700; color: #34d399;">{p_info.get('status', 'OK')}</div>
-                            </div>
-                            <div>
-                                <div style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase;">Puntos Totales</div>
-                                <div style="font-size: 1.15rem; font-weight: 800; color: #f43f5e;">{tot_pts} pts</div>
-                            </div>
-                            <div>
-                                <div style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase;">Media / Jornada</div>
-                                <div style="font-size: 1.15rem; font-weight: 800; color: #60a5fa;">{avg_pts:.2f}</div>
-                            </div>
-                        </div>
-                    </div>
-                    """
+                    ui.notice("Este futbolista no tiene todavía estadísticas por jornada registradas.")
                 )
 
-            with col_pchart:
-                if not df_p_gw.empty:
-                    # GRÁFICA DE RENDIMIENTO POR JORNADA (PUNTOS Y MINUTOS)
-                    fig_gw = make_subplots(specs=[[{"secondary_y": True}]])
-                    fig_gw.add_trace(
-                        go.Bar(
-                            x=[f"J{gw}" for gw in df_p_gw["gameweek"]],
-                            y=df_p_gw["points"],
-                            name="Puntos Fantasy",
-                            marker_color="#f43f5e",
-                            text=df_p_gw["points"],
-                            textposition="outside",
-                            hovertemplate="<b>Jornada %{x}</b><br>Puntos: %{y}<extra></extra>",
-                        ),
-                        secondary_y=False,
-                    )
-                    fig_gw.add_trace(
-                        go.Scatter(
-                            x=[f"J{gw}" for gw in df_p_gw["gameweek"]],
-                            y=df_p_gw["minutes"],
-                            name="Minutos Jugados",
-                            mode="lines+markers",
-                            line=dict(color="#38bdf8", width=3),
-                            marker=dict(size=8, color="#38bdf8", line=dict(color="#ffffff", width=1.5)),
-                            hovertemplate="Minutos: %{y}' / 90'<extra></extra>",
-                        ),
-                        secondary_y=True,
-                    )
-                    fig_gw.update_layout(
-                        template="plotly_dark",
-                        paper_bgcolor="rgba(0,0,0,0)",
-                        plot_bgcolor="rgba(30, 41, 59, 0.4)",
-                        margin=dict(l=20, r=20, t=30, b=20),
-                        title="📊 Puntos y Minutos por Jornada",
-                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                    )
-                    fig_gw.update_yaxes(title_text="Puntos", secondary_y=False)
-                    fig_gw.update_yaxes(title_text="Minutos", range=[0, 105], secondary_y=True)
-                    st.plotly_chart(fig_gw, use_container_width=True)
-                else:
-                    st.info("No hay estadísticas por jornada registradas para este futbolista.")
-
-            # Gráfica de cotización de valor de mercado si hay histórico diario
-            st.markdown("#### 💰 Histórico de Cotización de Mercado")
             if len(df_p_history) > 1:
+                # El color de la curva dice si el jugador vale hoy más o menos que
+                # el primer día registrado: la misma semántica que en la tabla.
+                serie = df_p_history["market_value"]
+                sube = float(serie.iloc[-1]) >= float(serie.iloc[0])
+                color = ui.TOKENS["up"] if sube else ui.TOKENS["down"]
+                relleno = ui.TOKENS["up_soft"] if sube else ui.TOKENS["down_soft"]
                 fig_price = go.Figure()
                 fig_price.add_trace(
                     go.Scatter(
                         x=df_p_history["snapshot_date"],
-                        y=df_p_history["market_value"],
-                        mode="lines+markers",
-                        name="Valor de Mercado",
-                        line=dict(color="#10b981", width=3, shape="spline"),
-                        marker=dict(size=6, color="#10b981", line=dict(color="#ffffff", width=1.5)),
+                        y=serie,
+                        mode="lines",
+                        name="Valor de mercado",
+                        line=dict(color=color, width=2.5),
                         fill="tozeroy",
-                        fillcolor="rgba(16, 185, 129, 0.1)",
-                        hovertemplate="<b>%{x|%Y-%m-%d}</b><br>Valor: %{y:$,d} €<extra></extra>",
+                        fillcolor=relleno,
+                        hovertemplate="<b>%{x|%d/%m/%Y}</b><br>%{y:,.0f} €<extra></extra>",
                     )
                 )
-                fig_price.update_layout(
-                    template="plotly_dark",
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(30, 41, 59, 0.4)",
-                    margin=dict(l=20, r=20, t=20, b=20),
-                    yaxis=dict(title="Valor", tickformat="$,d"),
-                    xaxis=dict(title="Fecha", showgrid=False),
-                    hovermode="x unified",
-                )
+                style_chart(fig_price, "Cotización desde el primer snapshot")
+                fig_price.update_yaxes(tickformat=",.0f", ticksuffix=" €")
+                fig_price.update_layout(hovermode="x unified")
                 st.plotly_chart(fig_price, use_container_width=True)
             else:
-                st.caption(
-                    f"📅 **Snapshot del día {latest_date}:** Cotización actual **{format_money(last_val)}**. "
-                    "La curva continua de precio trazará la serie temporal acumulada con cada snapshot diario automático."
+                render_html(
+                    ui.notice(
+                        f"Solo hay un snapshot de este jugador ({latest_date}), hoy vale "
+                        f"<b>{format_money(last_val)}</b>. La curva de cotización se traza sola "
+                        "según se acumulen días."
+                    )
                 )
 
-            # Desglose en tabla jornada a jornada
             if not df_p_gw.empty:
-                st.markdown("#### 📋 Desglose Detallado por Jornada")
-                gw_cols = ["gameweek", "points", "minutes", "goals", "assists", "saves", "goals_conceded", "yellow_cards", "red_cards"]
-                st.dataframe(
-                    df_p_gw[gw_cols],
-                    column_config={
-                        "gameweek": st.column_config.NumberColumn("Jornada", format="J%d"),
-                        "points": st.column_config.NumberColumn("Puntos", format="%d pts"),
-                        "minutes": st.column_config.NumberColumn("Minutos", format="%d'"),
-                        "goals": st.column_config.NumberColumn("Goles"),
-                        "assists": st.column_config.NumberColumn("Asistencias"),
-                        "saves": st.column_config.NumberColumn("Paradas"),
-                        "goals_conceded": st.column_config.NumberColumn("Goles Encajados"),
-                        "yellow_cards": st.column_config.NumberColumn("Amarillas"),
-                        "red_cards": st.column_config.NumberColumn("Rojas"),
-                    },
-                    use_container_width=True,
-                    hide_index=True,
-                )
+                render_html(ui.section("Jornada a jornada", "pitch"))
+                gw_columns = [
+                    {"label": "J", "align": "right", "cls": "rk"},
+                    {"label": "Puntos", "align": "right", "cls": "num"},
+                    {"label": "Minutos", "align": "right", "cls": "num"},
+                    {"label": "Goles", "align": "right", "cls": "num"},
+                    {"label": "Asist.", "align": "right", "cls": "num hide-sm"},
+                    {"label": "Paradas", "align": "right", "cls": "num hide-sm"},
+                    {"label": "Encajados", "align": "right", "cls": "num hide-sm"},
+                    {"label": "Tarjetas", "align": "right", "cls": "num hide-sm"},
+                ]
+
+                def _n(value) -> str:
+                    return str(int(value)) if pd.notnull(value) else '<span class="muted">—</span>'
+
+                gw_rows = []
+                for _, g in df_p_gw.iterrows():
+                    amarillas = int(g["yellow_cards"]) if pd.notnull(g.get("yellow_cards")) else 0
+                    rojas = int(g["red_cards"]) if pd.notnull(g.get("red_cards")) else 0
+                    if amarillas or rojas:
+                        tarjetas = ui.tag(
+                            ("R" if rojas else "A") + (f" x{amarillas}" if amarillas > 1 else ""),
+                            "warn" if rojas else "neutral",
+                        )
+                    else:
+                        tarjetas = '<span class="muted">—</span>'
+                    gw_rows.append(
+                        [
+                            str(int(g["gameweek"])),
+                            _n(g.get("points")),
+                            _n(g.get("minutes")),
+                            _n(g.get("goals")),
+                            _n(g.get("assists")),
+                            _n(g.get("saves")),
+                            _n(g.get("goals_conceded")),
+                            tarjetas,
+                        ]
+                    )
+                render_html(ui.data_table(gw_columns, gw_rows, max_height="46vh"))
 
     # =========================================================================
     # PESTAÑA 3: MINUTOS Y TITULARIDAD
     # =========================================================================
     with tab_minutes:
-        st.subheader("⏱️ Minutos Recientes como Proxy de Titularidad")
-        st.caption(
-            "La regularidad de minutos disputados en las últimas jornadas es el mejor indicador objetivo disponible. "
-            "Para predicciones avanzadas, consulta fuentes especializadas (Futbolfantasy, Jornada Perfecta)."
+        render_html(
+            ui.section(
+                "Minutos y titularidad",
+                "clock",
+                "Ordenado por puntos conseguidos por cada millón de valor: arriba están los que más rinden para lo que cuestan.",
+            )
+        )
+        render_html(
+            ui.notice(
+                "Esto <b>no es una probabilidad de alineación</b>. No existe dato fiable de titularidad, "
+                "así que se usan los minutos recientes como aproximación. Para pronósticos, "
+                "FutbolFantasy o Jornada Perfecta.",
+                icon_name="alert",
+            )
         )
 
         if df_gw.empty:
-            st.info("Todavía no hay estadísticas por jornada registradas. Se rellenan con el snapshot diario.")
+            render_html(ui.notice("Todavía no hay estadísticas por jornada. Las rellena el snapshot diario."))
         else:
             max_gw = int(df_gw["gameweek"].max())
             ventana = st.slider(
-                "Últimas N jornadas a considerar",
+                "Últimas jornadas a considerar",
                 min_value=1,
                 max_value=max_gw,
                 value=min(5, max_gw),
@@ -1118,41 +856,48 @@ def main():
             if search_query:
                 df_min = df_min[df_min["name"].str.lower().str.contains(search_query, na=False)]
 
-            solo_titulares = st.checkbox("Solo jugadores con más del 60% de los minutos", value=False)
+            solo_titulares = st.checkbox("Solo quien juega más del 60% de los minutos", value=False)
             if solo_titulares:
                 df_min = df_min[df_min["pct_minutos"] > 60]
 
             df_min_display = df_min.sort_values("pts_por_millon", ascending=False).reset_index(drop=True)
             df_min_display["rank"] = df_min_display.index + 1
 
-            st.dataframe(
-                df_min_display[
-                    ["rank", "foto", "name", "team_name", "position", "valor_fmt", "minutos", "pct_minutos", "puntos", "goles", "pts_por_millon"]
-                ],
-                column_config={
-                    "rank": st.column_config.NumberColumn("#", format="%d", width="small"),
-                    "foto": st.column_config.ImageColumn("Foto", width="small"),
-                    "name": st.column_config.TextColumn("Jugador"),
-                    "team_name": st.column_config.TextColumn("Equipo"),
-                    "position": st.column_config.TextColumn("Posición"),
-                    "valor_fmt": st.column_config.TextColumn("Valor"),
-                    "minutos": st.column_config.NumberColumn("Minutos"),
-                    "pct_minutos": st.column_config.ProgressColumn(
-                        "% Minutos", min_value=0, max_value=100, format="%.0f%%"
-                    ),
-                    "puntos": st.column_config.NumberColumn("Puntos"),
-                    "goles": st.column_config.NumberColumn("Goles"),
-                    "pts_por_millon": st.column_config.NumberColumn("Pts / M€", format="%.2f"),
-                },
-                use_container_width=True,
-                hide_index=True,
-            )
+            min_columns = [
+                {"label": "#", "align": "right", "cls": "rk"},
+                {"label": "Jugador", "align": "left"},
+                {"label": "Valor", "align": "right", "cls": "num"},
+                {"label": "Minutos", "align": "right", "cls": "num hide-sm"},
+                {"label": "% jugado", "align": "right"},
+                {"label": "Pts", "align": "right", "cls": "num"},
+                {"label": "Goles", "align": "right", "cls": "num hide-sm"},
+                {"label": "Pts / M€", "align": "right", "cls": "num"},
+            ]
+
+            min_rows = []
+            for _, r in df_min_display.head(250).iterrows():
+                ppm = r.get("pts_por_millon")
+                min_rows.append(
+                    [
+                        str(int(r["rank"])),
+                        ui.player_cell(
+                            r["name"], r.get("team_name"), r.get("position"), r.get("image_url") or NO_PLAYER_IMG
+                        ),
+                        format_money(r.get("market_value")),
+                        f"{int(r['minutos'])}'" if pd.notnull(r.get("minutos")) else '<span class="muted">—</span>',
+                        ui.bar_cell(float(r["pct_minutos"]) if pd.notnull(r.get("pct_minutos")) else None),
+                        format_points(r.get("puntos")),
+                        format_points(r.get("goles")),
+                        f"{ppm:.2f}".replace(".", ",") if pd.notnull(ppm) else '<span class="muted">—</span>',
+                    ]
+                )
+            render_html(ui.data_table(min_columns, min_rows))
 
     # =========================================================================
     # PESTAÑA 4: LIGA PRIVADA Y CAJA (FORMATO COMPACTO + CAJA ESTIMADA REAL)
     # =========================================================================
     with tab_league:
-        st.subheader("🏆 Clasificación y Estimación de Caja de Rivales")
+        render_html(ui.section("Liga privada", "trophy"))
 
         # La cuenta puede tener varias ligas. Hay que separarlas antes de calcular nada:
         # la caja estimada suma movimientos, y mezclar los de dos ligas la falsearía.
@@ -1170,7 +915,9 @@ def main():
             )
         elif league_ids:
             selected_league = league_ids[0]
-            st.caption(league_names.get(selected_league, f"Liga {selected_league}"))
+            render_html(
+                f'<p class="lg-n">{escape(league_names.get(selected_league, f"Liga {selected_league}"))}</p>'
+            )
 
         df_league_standings = (
             df_standings[df_standings["league_id"].astype(str) == selected_league]
@@ -1184,116 +931,142 @@ def main():
         )
 
         if df_league_standings.empty:
-            st.info("No hay datos de clasificación registrados para tu liga privada todavía.")
+            render_html(ui.notice("Todavía no hay clasificación registrada de tu liga privada."))
         else:
             latest_league_date = df_league_standings["snapshot_date"].max()
             df_cur_standings = df_league_standings[df_league_standings["snapshot_date"] == latest_league_date].copy()
 
-            # Podium para los 3 primeros con formato compacto
             if len(df_cur_standings) >= 3:
                 top3 = df_cur_standings.sort_values("position").head(3).to_dict("records")
-                c_p2, c_p1, c_p3 = st.columns([1, 1.2, 1])
-
-                with c_p1:
-                    render_html(
-                        f"""
-                        <div class="podium-card podium-1">
-                            <div style="font-size: 2rem;">🥇</div>
-                            <div style="font-size: 1.3rem; font-weight: 800; color: #facc15;">{top3[0]['team_name']}</div>
-                            <div style="color: #cbd5e1; font-size: 0.9rem;">{top3[0].get('manager_name', 'Mánager')}</div>
-                            <div style="font-size: 1.5rem; font-weight: 800; color: white; margin-top: 8px;">{format_points(top3[0].get('points'))} pts</div>
-                            <div style="color: #94a3b8; font-size: 0.85rem;">Plantilla: {format_money(top3[0].get('team_value'))}</div>
-                        </div>
-                        """
+                render_html(
+                    ui.podium(
+                        [
+                            {
+                                "pos": int(t.get("position") or i + 1),
+                                "team": t.get("team_name") or "—",
+                                "manager": t.get("manager_name") or "Mánager",
+                                "points": format_points(t.get("points")),
+                                "value": format_money(t.get("team_value")),
+                            }
+                            for i, t in enumerate(top3)
+                        ]
                     )
-                with c_p2:
-                    render_html(
-                        f"""
-                        <div class="podium-card podium-2" style="margin-top: 24px;">
-                            <div style="font-size: 1.7rem;">🥈</div>
-                            <div style="font-size: 1.15rem; font-weight: 700; color: #e2e8f0;">{top3[1]['team_name']}</div>
-                            <div style="color: #94a3b8; font-size: 0.85rem;">{top3[1].get('manager_name', 'Mánager')}</div>
-                            <div style="font-size: 1.3rem; font-weight: 800; color: white; margin-top: 6px;">{format_points(top3[1].get('points'))} pts</div>
-                            <div style="color: #94a3b8; font-size: 0.8rem;">Plantilla: {format_money(top3[1].get('team_value'))}</div>
-                        </div>
-                        """
-                    )
-                with c_p3:
-                    render_html(
-                        f"""
-                        <div class="podium-card podium-3" style="margin-top: 36px;">
-                            <div style="font-size: 1.5rem;">🥉</div>
-                            <div style="font-size: 1.1rem; font-weight: 700; color: #d97706;">{top3[2]['team_name']}</div>
-                            <div style="color: #94a3b8; font-size: 0.85rem;">{top3[2].get('manager_name', 'Mánager')}</div>
-                            <div style="font-size: 1.2rem; font-weight: 800; color: white; margin-top: 6px;">{format_points(top3[2].get('points'))} pts</div>
-                            <div style="color: #94a3b8; font-size: 0.8rem;">Plantilla: {format_money(top3[2].get('team_value'))}</div>
-                        </div>
-                        """
-                    )
-
-            st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
-
-            # Estimación de caja por movimientos
-            cajas_estimadas = calculate_estimated_cash(df_cur_standings, df_league_movements)
-            if not cajas_estimadas.empty:
-                st.markdown("#### 💰 Estimación de Caja Disponible")
-                st.caption(
-                    "Calculada a partir del saldo inicial y el flujo neto acumulado de fichajes, ventas y premios. "
-                    "Las diferencias relativas entre mánagers son exactas."
                 )
 
-                # Unir por team_id o manager_id de forma robusta
+
+            cajas_estimadas = calculate_estimated_cash(df_cur_standings, df_league_movements)
+            if not cajas_estimadas.empty:
+                render_html(
+                    ui.section(
+                        "Caja estimada",
+                        "wallet",
+                        "Saldo inicial más el flujo acumulado de fichajes, ventas y premios.",
+                    )
+                )
+                render_html(
+                    ui.notice(
+                        "La API devuelve el saldo de los rivales <b>siempre a nulo</b>: esto es una "
+                        "<b>estimación</b>, no su dinero real. Las diferencias entre mánagers sí son "
+                        "fiables; el absoluto no. Y el valor de plantilla <b>no es dinero disponible</b>: "
+                        "no deduzcas de él cuánto puede pujar nadie.",
+                        kind="warn",
+                    )
+                )
+
                 df_tabla_caja = pd.merge(
-                    df_cur_standings[["league_team_id", "position", "team_name", "manager_name", "points", "team_value"]],
-                    cajas_estimadas[["team_id", "cash_estimate", "net_transfer_flow", "prize_flow", "movements_count"]],
+                    df_cur_standings[
+                        ["league_team_id", "position", "team_name", "manager_name", "points", "team_value"]
+                    ],
+                    cajas_estimadas[
+                        ["team_id", "cash_estimate", "net_transfer_flow", "prize_flow", "movements_count"]
+                    ],
                     left_on="league_team_id",
                     right_on="team_id",
                     how="left",
-                )
+                ).sort_values("position")
 
-                df_tabla_caja["team_value_fmt"] = df_tabla_caja["team_value"].apply(lambda v: format_money(v))
-                df_tabla_caja["cash_estimate_fmt"] = df_tabla_caja["cash_estimate"].apply(lambda v: format_money(v))
-                df_tabla_caja["net_transfer_flow_fmt"] = df_tabla_caja["net_transfer_flow"].apply(lambda v: format_money(v, with_sign=True))
-                df_tabla_caja["prize_flow_fmt"] = df_tabla_caja["prize_flow"].apply(lambda v: format_money(v, with_sign=True))
+                def _signed(value) -> str:
+                    """Importe con signo y color: verde entra, rojo sale."""
+                    if pd.isna(value):
+                        return MUTED_DASH
+                    tone = "up" if value > 0 else ("down" if value < 0 else "flat")
+                    return f'<span class="mn mn-{tone}">{format_money(value, with_sign=True)}</span>'
 
-                st.dataframe(
-                    df_tabla_caja[
-                        ["position", "team_name", "manager_name", "points", "team_value_fmt", "cash_estimate_fmt", "net_transfer_flow_fmt", "prize_flow_fmt", "movements_count"]
-                    ].sort_values("position"),
-                    column_config={
-                        "position": st.column_config.NumberColumn("Posición", format="%d"),
-                        "team_name": st.column_config.TextColumn("Equipo"),
-                        "manager_name": st.column_config.TextColumn("Mánager"),
-                        "points": st.column_config.NumberColumn("Puntos"),
-                        "team_value_fmt": st.column_config.TextColumn("Valor Plantilla"),
-                        "cash_estimate_fmt": st.column_config.TextColumn("Caja Estimada"),
-                        "net_transfer_flow_fmt": st.column_config.TextColumn("Flujo Fichajes"),
-                        "prize_flow_fmt": st.column_config.TextColumn("Premios"),
-                        "movements_count": st.column_config.NumberColumn("Movs"),
-                    },
-                    use_container_width=True,
-                    hide_index=True,
-                )
+                caja_columns = [
+                    {"label": "#", "align": "right", "cls": "rk"},
+                    {"label": "Equipo", "align": "left"},
+                    {"label": "Pts", "align": "right", "cls": "num"},
+                    {"label": "Plantilla", "align": "right", "cls": "num"},
+                    {"label": "Caja estimada", "align": "right", "cls": "num"},
+                    {"label": "Fichajes", "align": "right", "cls": "num hide-sm"},
+                    {"label": "Premios", "align": "right", "cls": "num hide-sm"},
+                    {"label": "Movs", "align": "right", "cls": "num hide-sm"},
+                ]
+                caja_rows = []
+                for _, r in df_tabla_caja.iterrows():
+                    caja = r.get("cash_estimate")
+                    if pd.notnull(caja) and caja < 0:
+                        caja_html = f'<span class="mn mn-down">{format_money(caja)}</span>'
+                    else:
+                        caja_html = format_money(caja)
+                    movs = r.get("movements_count")
+                    equipo_html = (
+                        '<div class="pc-tx"><span class="pc-name">'
+                        + escape(str(r.get("team_name") or "—"))
+                        + '</span><span class="pc-team">'
+                        + escape(str(r.get("manager_name") or "Mánager"))
+                        + "</span></div>"
+                    )
+                    caja_rows.append(
+                        [
+                            format_points(r.get("position")),
+                            equipo_html,
+                            format_points(r.get("points")),
+                            format_money(r.get("team_value")),
+                            caja_html,
+                            _signed(r.get("net_transfer_flow")),
+                            _signed(r.get("prize_flow")),
+                            str(int(movs)) if pd.notnull(movs) else MUTED_DASH,
+                        ]
+                    )
+                render_html(ui.data_table(caja_columns, caja_rows, max_height="none"))
 
         if not df_league_movements.empty:
-            st.markdown("#### 🔄 Últimos Movimientos y Actividad de la Liga")
-            df_movements_display = df_league_movements.copy()
-            df_movements_display["amount_fmt"] = df_movements_display["amount"].apply(lambda v: format_money(v))
+            render_html(ui.section("Movimientos de la liga", "trend_up"))
 
-            cols_mov = ["movement_date_str", "activity_desc", "player_name", "manager_name", "amount_fmt"]
-            st.dataframe(
-                df_movements_display[cols_mov].dropna(subset=["activity_desc"]),
-                column_config={
-                    "movement_date_str": st.column_config.TextColumn("Fecha"),
-                    "activity_desc": st.column_config.TextColumn("Tipo de Actividad"),
-                    "player_name": st.column_config.TextColumn("Jugador"),
-                    "manager_name": st.column_config.TextColumn("Mánager"),
-                    "amount_fmt": st.column_config.TextColumn("Importe"),
-                },
-                use_container_width=True,
-                hide_index=True,
-                height=400,
-            )
+            # Un icono por tipo: entra dinero, sale dinero, o ninguna de las dos
+            # cosas. Es lo primero que se busca al repasar la actividad de la liga.
+            iconos_actividad = {1: "trend_down", 31: "trend_down", 2: "trend_up", 33: "trend_up", 6: "trophy"}
+
+            mov_columns = [
+                {"label": "Fecha", "align": "left", "cls": "hide-sm"},
+                {"label": "Movimiento", "align": "left"},
+                {"label": "Jugador", "align": "left"},
+                {"label": "Mánager", "align": "left", "cls": "hide-sm"},
+                {"label": "Importe", "align": "right", "cls": "num"},
+            ]
+            mov_rows = []
+            for _, m in df_league_movements.dropna(subset=["activity_desc"]).iterrows():
+                tipo = m.get("activity_type")
+                glyph = ui.icon(iconos_actividad.get(tipo, "dot"), 15, "mv-i")
+                importe = m.get("amount")
+                if pd.isna(importe):
+                    importe_html = MUTED_DASH
+                else:
+                    tone = "up" if tipo in (2, 33, 6) else "down"
+                    importe_html = f'<span class="mn mn-{tone}">{format_money(importe)}</span>'
+                fecha = escape(str(m.get("movement_date_str") or "—"))
+                desc = escape(str(m.get("activity_desc") or "—"))
+                mov_rows.append(
+                    [
+                        f'<span class="muted">{fecha}</span>',
+                        f'<span class="mv">{glyph}{desc}</span>',
+                        escape(str(m.get("player_name") or "—")),
+                        '<span class="muted">' + escape(str(m.get("manager_name") or "—")) + "</span>",
+                        importe_html,
+                    ]
+                )
+            render_html(ui.data_table(mov_columns, mov_rows, max_height="52vh"))
 
 
 if __name__ == "__main__":
