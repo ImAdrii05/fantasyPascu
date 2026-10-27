@@ -51,8 +51,14 @@ class FantasyApiClient:
         params: dict[str, Any] | None = None,
         json_data: dict[str, Any] | None = None,
         retry_on_401: bool = True,
+        retry: bool = True,
     ) -> Any:
-        """Ejecuta una petición HTTP con autorización Bearer, throttle y backoff exponencial."""
+        """Ejecuta una petición HTTP con autorización Bearer, throttle y backoff exponencial.
+
+        Con `retry=False` no se reintenta nada salvo el 401 (que significa que el
+        servidor rechazó la petición sin hacer nada). Es para operaciones que gastan
+        dinero: reenviar un pago tras un timeout podría repetir algo que ya se hizo.
+        """
         token = get_access_token(force_refresh=False)
         headers = {
             "Authorization": f"Bearer {token}",
@@ -77,6 +83,8 @@ class FantasyApiClient:
                     timeout=self.timeout,
                 )
             except requests.RequestException as e:
+                if not retry:
+                    raise FantasyApiError(f"Fallo de conexión: {e}") from e
                 retries += 1
                 if retries > self.max_retries:
                     raise FantasyApiError(f"Fallo de conexión tras {self.max_retries} reintentos: {e}") from e
@@ -89,20 +97,22 @@ class FantasyApiClient:
             if response.status_code == 401 and retry_on_401:
                 logger.info("Recibido HTTP 401. Forzando refresco de token y reintentando...")
                 try:
-                    new_token = get_access_token(force_refresh=True)
-                    headers["Authorization"] = f"Bearer {new_token}"
-                    return self.request(
-                        method=method,
-                        url=url,
-                        params=params,
-                        json_data=json_data,
-                        retry_on_401=False,  # Un único reintento
-                    )
+                    get_access_token(force_refresh=True)
                 except Exception as e:
                     raise AuthExpired(f"Error al renovar token tras HTTP 401: {e}") from e
+                # El reenvío va fuera del try: un error suyo (p. ej. un 409 al pagar)
+                # es de la petición, no del token, y no debe disfrazarse de AuthExpired.
+                return self.request(
+                    method=method,
+                    url=url,
+                    params=params,
+                    json_data=json_data,
+                    retry_on_401=False,  # Un único reintento
+                    retry=retry,
+                )
 
             # Reintento con backoff para 429 (Too Many Requests) o errores de servidor (5xx)
-            if response.status_code in (429, 500, 502, 503, 504):
+            if response.status_code in (429, 500, 502, 503, 504) and retry:
                 retries += 1
                 if retries > self.max_retries:
                     raise FantasyApiError(
@@ -129,8 +139,10 @@ class FantasyApiClient:
                     response_body=response.text,
                 )
 
-            # Si es 204 No Content
-            if response.status_code == 204:
+            # 204 No Content, o 200 con cuerpo vacío: así responden las operaciones de
+            # cláusula cuando salen bien. Tratarlo como JSON inválido daría por fallido
+            # un pago que sí se ha hecho.
+            if response.status_code == 204 or not response.content.strip():
                 return None
 
             try:
@@ -144,6 +156,19 @@ class FantasyApiClient:
 
     def get(self, url: str, params: dict[str, Any] | None = None) -> Any:
         return self.request("GET", url, params=params)
+
+    def pay_buyout_clause(self, league_id: str | int, player_team_id: str | int, amount: int) -> Any:
+        """Paga la cláusula de un jugador de otro mánager. Gasta dinero de verdad.
+
+        `amount` tiene que ser la cláusula vigente completa: la API no admite pagar otra
+        cifra. Una sola petición, sin reintentos (ver `request(retry=False)`).
+
+        Raises:
+            FantasyApiError: Si la API lo rechaza. Un 409 significa que la cláusula no
+                está disponible ahora mismo (bloqueada, blindada o ya pagada por otro).
+        """
+        url = endpoints.pay_buyout_url(league_id, player_team_id)
+        return self.request("POST", url, json_data={"buyoutClauseToPay": int(amount)}, retry=False)
 
     def get_teams_master(self) -> tuple[list[Team], Any]:
         """Obtiene la lista de equipos maestros. Devuelve (lista_equipos, raw_json)."""

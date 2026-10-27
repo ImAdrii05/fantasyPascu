@@ -57,3 +57,8 @@ def league_team_url(league_id: str | int, team_id: str | int) -> str:
     puede clausular ni cuándo se abre la cláusula.
     """
     return f"{get_base_url()}/v1/competition/{config.COMPETITION_ID}/leagues/{league_id}/teams/{team_id}?x-lang=es"
+
+
+def pay_buyout_url(league_id: str | int, player_team_id: str | int) -> str:
+    """Pago de la cláusula de un jugador (clausulazo). Sin x-lang, igual que LaLigaApp."""
+    return f"{get_base_url()}/v1/competition/{config.COMPETITION_ID}/league/{league_id}/buyout/{player_team_id}/pay"

@@ -8,6 +8,7 @@ justo lo que hace legible un listado de 800 jugadores.
 
 from datetime import date, datetime, timezone
 from html import escape
+import json
 from urllib.parse import urlencode
 import textwrap
 import streamlit as st
@@ -181,6 +182,119 @@ def load_my_teams() -> dict[str, str]:
     except Exception:
         return {}
     return {str(r["id"]): str(r["team_id"]) for r in rows if r.get("id") and r.get("team_id")}
+
+
+def saldo_en_vivo(client, league_id: str) -> int | None:
+    """Tu saldo en la liga (`team.money` del endpoint de ligas del usuario).
+
+    Sin caché a propósito: se usa justo antes de pagar, y un saldo de hace unos
+    segundos puede no ser el de ahora.
+    """
+    ligas, _ = client.get_user_leagues()
+    return next((lg.team_money for lg in ligas if lg.id == str(league_id)), None)
+
+
+def mensaje_api(error) -> str:
+    """El texto que da LaLiga en un error (`message` del JSON), o el cuerpo a secas."""
+    cuerpo = (getattr(error, "response_body", None) or "").strip()
+    try:
+        datos = json.loads(cuerpo)
+        if isinstance(datos, dict) and (datos.get("message") or datos.get("error")):
+            return str(datos.get("message") or datos.get("error"))
+    except ValueError:
+        pass
+    return cuerpo[:200] or str(error)
+
+
+@st.dialog("Pagar cláusula")
+def dialogo_clausulazo(league_id: str, fila: dict) -> None:
+    """Confirma y paga una cláusula. Antes vuelve a leerla en vivo.
+
+    La lista de la pestaña puede tener hasta 90 s: en ese tiempo el dueño ha podido
+    subir la cláusula, blindar al jugador o venderlo. Por eso se relee su plantilla
+    justo antes, y se paga la cifra vigente, que es la única que admite la API.
+    """
+    from fantasy.api.client import FantasyApiClient, FantasyApiError
+
+    nombre = fila.get("player_name") or "el jugador"
+    dueno = fila.get("manager_name") or "su mánager"
+    client = FantasyApiClient(throttle_seconds=0)
+
+    with st.spinner("Comprobando la cláusula en vivo..."):
+        try:
+            plantilla, _ = client.get_league_team(league_id, fila["league_team_id"])
+        except Exception as e:
+            st.error(f"No se pudo comprobar la cláusula: {e}")
+            return
+    actual = next((j for j in plantilla if j.player_team_id == fila.get("player_team_id")), None)
+    if actual is None:
+        st.error(f"{nombre} ya no está en el equipo de {dueno}.")
+        return
+    if not actual.clause_open():
+        st.error(f"La cláusula de {nombre} ya no está abierta: la han blindado o vuelve a estar bloqueada.")
+        return
+    importe = actual.buyout_clause
+    if not importe:
+        st.error("LaLiga no da el importe de esta cláusula: no se puede pagar desde aquí.")
+        return
+
+    anterior = fila.get("buyout_clause")
+    if anterior and pd.notnull(anterior) and int(anterior) != importe:
+        st.warning(f"La cláusula ha cambiado: antes {format_money(anterior)}, ahora {format_money(importe)}.")
+
+    try:
+        saldo = saldo_en_vivo(client, str(league_id))
+    except Exception:
+        saldo = None
+
+    render_html(
+        ui.player_cell(nombre, fila.get("club_name"), fila.get("position"), fila.get("image_url") or NO_PLAYER_IMG)
+    )
+    hechos = [("Dueño", dueno), ("Cláusula", format_money(importe))]
+    if saldo is not None:
+        hechos += [("Tu saldo", format_money(saldo)), ("Te quedarían", format_money(saldo - importe))]
+    render_html(
+        "".join(
+            f'<div style="display:flex;justify-content:space-between;padding:6px 0;'
+            f'border-bottom:1px solid var(--line)"><span class="muted">{escape(k)}</span>'
+            f"<strong>{escape(v)}</strong></div>"
+            for k, v in hechos
+        )
+    )
+
+    if saldo is not None and saldo < importe:
+        st.error(f"No te llega: te faltan {format_money(importe - saldo)}.")
+        return
+
+    st.caption("El pago es inmediato y no se puede deshacer.")
+    if not st.button(f"Pagar {format_money(importe)}", type="primary", use_container_width=True):
+        return
+
+    try:
+        client.pay_buyout_clause(league_id, actual.player_team_id, importe)
+    except FantasyApiError as e:
+        if e.status_code is None:
+            # Sin respuesta no se sabe si el pago llegó: reintentar a ciegas podría
+            # repetirlo. Se manda a comprobar primero.
+            st.error(
+                "LaLiga no respondió, así que no se sabe si el pago se ha hecho. Vuelve a "
+                "consultar las cláusulas antes de intentarlo otra vez."
+            )
+        elif e.status_code == 409:
+            st.error(
+                f"LaLiga dice que la cláusula de {nombre} no está disponible ahora mismo "
+                f"(¿la ha pagado otro o la han blindado?). {mensaje_api(e)}"
+            )
+        else:
+            st.error(f"LaLiga rechazó el pago (HTTP {e.status_code}): {mensaje_api(e)}")
+        return
+    except Exception as e:
+        st.error(f"No se pudo pagar la cláusula: {e}")
+        return
+
+    load_squads.clear()
+    st.session_state["clausulazo_hecho"] = f"¡Fichado! {nombre} es tuyo por {format_money(importe)}."
+    st.rerun()
 
 
 def formatear_cuenta_atras(cuando, ahora=None) -> str:
@@ -1188,6 +1302,8 @@ def main():
                 "Quién tiene a quién, lo que cuesta su cláusula y a qué hora exacta se abre.",
             )
         )
+        if "clausulazo_hecho" in st.session_state:
+            st.success(st.session_state.pop("clausulazo_hecho"))
 
         ligas = sorted(league_names) or sorted(
             set(df_standings["league_id"].astype(str)) if not df_standings.empty else set()
@@ -1398,6 +1514,32 @@ def main():
                 for _, r in df_v.head(200).iterrows()
             ]
         render_html(ui.data_table(columnas, filas))
+
+        # Pago de una cláusula. Solo las que se pueden pagar ahora y no son tuyas; el
+        # diálogo vuelve a comprobarla en vivo y pide confirmación antes de gastar.
+        pagables = df_v[df_v["abierta"] & ~df_v["es_mio"] & df_v["player_team_id"].notna()].head(200)
+        if not pagables.empty:
+            render_html(
+                ui.section(
+                    "Pagar una cláusula",
+                    "wallet",
+                    "Antes de pagar se vuelve a comprobar la cláusula en vivo y se pide confirmación.",
+                )
+            )
+            c_jug, c_btn = st.columns([3, 1], vertical_alignment="bottom")
+            with c_jug:
+                elegido = st.selectbox(
+                    "Jugador",
+                    list(pagables.index),
+                    format_func=lambda i: (
+                        f"{pagables.at[i, 'player_name']} · {pagables.at[i, 'manager_name']} · "
+                        f"{format_money(pagables.at[i, 'buyout_clause'])}"
+                    ),
+                    key="jugador_clausulazo",
+                )
+            with c_btn:
+                if st.button("Pagar cláusula…", key="abrir_clausulazo", use_container_width=True):
+                    dialogo_clausulazo(str(liga_sel), pagables.loc[elegido].to_dict())
 
 
     with tab_squads:
