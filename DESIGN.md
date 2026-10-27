@@ -85,17 +85,24 @@ MED `#00726E`, DEL `#C23400`, ENT `#4A4F54`.
 - `notice` — avisos, y en particular el que marca la caja como estimada.
 - `bar_cell`, `tag`, `section`, `player_header`.
 
-## El estado vive en la URL
+## Ordenar pulsando la cabecera, sin recargar
 
-Ordenar es pulsar la cabecera de la columna, y eso es un enlace: navega y
-recarga la aplicación entera. Para que los filtros no se evaporen en cada clic,
-posición, equipo, rango, búsqueda y "solo en venta" viajan también en la URL
-(`FILTROS_EN_URL` en `app.py`): los widgets leen de ahí su valor inicial y lo
-reescriben al cambiar, y el enlace de ordenación los arrastra consigo.
+La tabla es HTML propio, así que un clic en ella no puede llamar a Python por sí
+solo. El puente está en `PUENTE_ORDEN` (`app.py`): un script dentro de un
+componente de Streamlit —mismo origen, así que alcanza al documento padre—
+intercepta los clics sobre `[data-sort]` y, en su lugar, pulsa un botón nativo
+de Streamlit que está oculto. Eso provoca un rerun normal: la tabla se reordena
+en menos de un segundo y **la página no se recarga**.
 
-Efecto secundario que vale la pena: cualquier vista concreta —delanteros de
-menos de 10M ordenados por puntos— es un enlace que se puede guardar o mandar
-por WhatsApp.
+Las cabeceras siguen siendo enlaces de verdad (`href="?orden=..."`). Es la red
+de seguridad: si el puente no llegara a montarse, ordenar seguiría funcionando,
+solo que recargando. Nada se queda sin funcionar.
+
+El estado también se refleja en la URL, pero como espejo y no como mecanismo:
+el orden y los filtros (posición, equipo, rango, búsqueda y "solo en venta",
+en `FILTROS_EN_URL`) se escriben ahí sin recargar. Así cualquier vista concreta
+—delanteros de menos de 10M ordenados por puntos— es un enlace que se puede
+guardar o mandar por WhatsApp.
 
 ## Iconos
 

@@ -240,9 +240,13 @@ def data_table(
         keep = sort.get("keep", "")
         href = f'?{keep}{sort["param"]}={key}&dir={siguiente}'
         clase = "th-s th-a" if activa else "th-s"
+        # El `href` es la red de seguridad: si el puente de JavaScript no llega a
+        # montarse, el enlace ordena igual recargando. Con el puente, `data-sort`
+        # se intercepta y se reordena sin recargar nada.
         return (
             f'<th class="al-{c.get("align", "left")} {c.get("cls", "")}">'
-            f'<a class="{clase}" href="{href}" title="Ordenar por {label}">{label}{flecha}</a></th>'
+            f'<a class="{clase}" href="{href}" data-sort="{key}" '
+            f'title="Ordenar por {label}">{label}{flecha}</a></th>'
         )
 
     head = "".join(head_cell(c) for c in columns)
@@ -707,6 +711,17 @@ header[data-testid="stHeader"] {
 }
 [data-baseweb="tab-list"] [data-baseweb="tab-highlight"],
 [data-baseweb="tab-list"] [data-baseweb="tab-border"] { display: none !important; }
+
+/* Botones que el puente de ordenación pulsa por nosotros: nunca se ven. */
+.st-key-ordenadores { display: none !important; }
+
+/* El iframe del puente solo lleva un script y no pinta nada. No se oculta con
+   display:none, que en algunos navegadores impide que el iframe llegue a
+   cargar: se deja sin alto y fuera del flujo. */
+[data-testid="stCustomComponentV1"] {
+  height: 0 !important; min-height: 0 !important; border: 0 !important;
+  position: absolute; visibility: hidden;
+}
 
 .stSlider [data-baseweb="slider"] div[role="slider"] { border-color: var(--ink) !important; }
 [data-testid="stWidgetLabel"] p {

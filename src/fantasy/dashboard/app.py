@@ -11,6 +11,7 @@ from html import escape
 from urllib.parse import urlencode
 import textwrap
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -217,6 +218,75 @@ def format_points(val: int | float | None) -> str:
         return f"{float(val):g}"
     except (ValueError, TypeError):
         return str(val)
+
+
+# Columnas por las que se puede ordenar el mercado, y la columna del DataFrame
+# a la que corresponde cada una.
+ORDENES_MERCADO = {
+    "jugador": "name",
+    "valor": "market_value",
+    "variacion": "pct_change",
+    "puntos": "points",
+    "media": "average_points",
+}
+
+# Puente entre la cabecera de la tabla y Streamlit. La tabla es HTML, así que un
+# clic en ella no puede llamar a Python por sí solo; lo que hace este script es
+# traducir ese clic en una pulsación de un botón nativo de Streamlit que está
+# oculto. Así se reordena con un rerun normal, sin recargar la página.
+#
+# Corre dentro de un iframe del mismo origen, que es como Streamlit monta los
+# componentes, y por eso alcanza al documento padre.
+PUENTE_ORDEN = """
+<script>
+(function () {
+  var doc = window.parent && window.parent.document;
+  if (!doc || doc.__puenteOrdenFantasy) return;
+  doc.__puenteOrdenFantasy = true;
+
+  function ordenar(ev) {
+    var origen = ev.target && ev.target.closest ? ev.target.closest("[data-sort]") : null;
+    if (!origen) return;
+    if (ev.type === "keydown" && ev.key !== "Enter" && ev.key !== " ") return;
+    var host = doc.querySelector(".st-key-orden_" + origen.getAttribute("data-sort"));
+    var boton = host ? host.querySelector("button") : null;
+    if (!boton) return;          // sin botón, el enlace hace su trabajo
+    ev.preventDefault();
+    boton.click();
+  }
+
+  doc.addEventListener("click", ordenar, true);
+  doc.addEventListener("keydown", ordenar, true);
+})();
+</script>
+"""
+
+
+def orden_actual_mercado(has_variation: bool) -> tuple[str, str]:
+    """Columna y sentido de ordenación vigentes, con su valor inicial."""
+    if "orden" not in st.session_state:
+        guardado = st.query_params.get("orden")
+        st.session_state.orden = (
+            guardado if guardado in ORDENES_MERCADO else ("variacion" if has_variation else "valor")
+        )
+        sentido = st.query_params.get("dir")
+        st.session_state.sentido = sentido if sentido in ("asc", "desc") else "desc"
+    if st.session_state.orden == "variacion" and not has_variation:
+        st.session_state.orden = "valor"
+    return st.session_state.orden, st.session_state.sentido
+
+
+def pulsar_orden(clave: str) -> None:
+    """Aplica el clic en una cabecera: cambia de columna, o invierte el sentido."""
+    if st.session_state.orden == clave:
+        st.session_state.sentido = "asc" if st.session_state.sentido == "desc" else "desc"
+    else:
+        st.session_state.orden = clave
+        # Los nombres se leen de la A a la Z; todo lo demás, de mayor a menor.
+        st.session_state.sentido = "asc" if clave == "jugador" else "desc"
+    # La URL se actualiza sin recargar, para que la vista siga siendo compartible.
+    st.query_params["orden"] = st.session_state.orden
+    st.query_params["dir"] = st.session_state.sentido
 
 
 # Los filtros y el orden viven en la URL, no solo en la sesión. Pulsar una
@@ -515,24 +585,17 @@ def main():
 
         df_view = df_market[df_market["en_mercado"]].copy() if solo_mercado_tab else df_market.copy()
 
-        # Orden: se pulsa directamente en la cabecera de la tabla.
-        ORDENES = {
-            "jugador": "name",
-            "valor": "market_value",
-            "variacion": "pct_change",
-            "puntos": "points",
-            "media": "average_points",
-        }
-        orden = st.query_params.get("orden", "variacion" if has_variation else "valor")
-        if orden not in ORDENES or (orden == "variacion" and not has_variation):
-            orden = "valor"
-        sentido = st.query_params.get("dir")
-        if sentido not in ("asc", "desc"):
-            # Los nombres se leen de la A a la Z; todo lo demás, de mayor a menor.
-            sentido = "asc" if orden == "jugador" else "desc"
+        # Orden: se pulsa directamente en la cabecera de la tabla. Estos botones
+        # están ocultos; el puente de arriba los pulsa por nosotros cuando se
+        # hace clic en la cabecera, y así no hay recarga.
+        with st.container(key="ordenadores"):
+            for clave in ORDENES_MERCADO:
+                st.button(clave, key=f"orden_{clave}", on_click=pulsar_orden, args=(clave,))
+        components.html(PUENTE_ORDEN, height=0)
 
+        orden, sentido = orden_actual_mercado(has_variation)
         df_sorted = df_view.sort_values(
-            by=ORDENES[orden], ascending=(sentido == "asc"), na_position="last"
+            by=ORDENES_MERCADO[orden], ascending=(sentido == "asc"), na_position="last"
         )
 
         # Cifras de cabecera en una sola fila con filetes: cuatro tarjetas
