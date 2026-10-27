@@ -148,3 +148,41 @@ fábrica, que aquí significaría "ha bajado de precio".
    usuario; el cálculo sigue en `analytics/money.py` por si vuelve.
 3. **Los minutos no son probabilidad de alineación**, y el panel lo dice donde
    se muestran.
+
+## Carga de datos: lo que se pide y cuándo
+
+Streamlit vuelve a ejecutar el script entero en cada interacción, así que el
+coste de una consulta se paga en cada clic. Medido contra Supabase, el reparto
+era este:
+
+| Consulta | Tiempo | Filas |
+|---|---|---|
+| `player_daily` (histórico completo) | **6,66 s** | 48.263 |
+| `players` | 0,59 s | 864 |
+| `player_gameweek_stats` | 0,58 s | 4.675 |
+| `league_market` | 0,27 s | 1.942 |
+| `league_movements` | 0,18 s | 881 |
+| `player_daily` (dos últimos días) | **0,26 s** | 1.728 |
+
+El histórico completo costaba más que todo el resto junto, y el mercado solo
+necesita de él dos días: el último y el anterior, para calcular la variación.
+De ahí el reparto en cuatro cargadores:
+
+- `load_market_data` — jugadores y equipos. Ya no toca el histórico.
+- `load_snapshot_dates` — las fechas salen de `raw_snapshots`, que guarda una
+  fila por día y endpoint: 57 filas en vez de 48.000. Leer el histórico entero
+  solo para contar los días era el gasto más absurdo de los dos.
+- `load_recent_daily(fechas)` — los dos últimos snapshots.
+- `load_player_history(player_id)` — la cotización completa de **un** jugador,
+  y solo cuando se abre su ficha. Son 57 filas.
+
+`CACHE_TTL` es de media hora. El cron escribe una vez al día, así que no hay
+forma de ver nada viejo por esperar treinta minutos.
+
+**Cada pestaña es un `@st.fragment`.** Sin eso, ordenar la tabla del mercado
+obligaba a Streamlit a recalcular también las tres pestañas que no se ven.
+Ahora un clic dentro de una pestaña solo la redibuja a ella.
+
+Medido en el navegador: **261 ms** desde pulsar Enter en el buscador hasta que
+la tabla cambia, y **454 ms** desde pulsar una cabecera hasta que se reordena.
+Antes cada una de esas acciones recargaba la página.

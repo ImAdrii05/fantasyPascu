@@ -41,6 +41,10 @@ NO_PLAYER_IMG = "https://assets-fantasy.llt-services.com/players/no-player/no-pl
 # Celda sin dato. Un guion gris, nunca un cero: no es lo mismo "no jugó" que "jugó 0".
 MUTED_DASH = '<span class="muted">—</span>'
 
+# El cron escribe una vez al día, así que media hora de caché no deja ver
+# nada viejo y ahorra releer la base en cada clic.
+CACHE_TTL = 1800
+
 
 @st.cache_resource
 def get_supabase_client():
@@ -54,7 +58,7 @@ def _df(rows: list[dict], columns: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows) if rows else pd.DataFrame(columns=columns)
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_TTL)
 def load_market_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Carga jugadores, snapshots diarios y equipos desde Supabase paginando."""
     client = get_supabase_client()
@@ -69,18 +73,67 @@ def load_market_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     )
     df_players = _df(players, ["id", "name", "nickname", "position", "position_id", "team_id", "status", "image_url"])
 
+    return df_players, df_teams
+
+
+@st.cache_data(ttl=CACHE_TTL)
+def load_snapshot_dates() -> list[str]:
+    """Fechas con snapshot, de la más antigua a la más reciente.
+
+    Sale de `raw_snapshots`, que guarda una fila por día y endpoint: 57 filas en
+    vez de las 48.000 de `player_daily`. Leer el histórico entero solo para
+    contar los días costaba casi siete segundos.
+    """
+    client = get_supabase_client()
+    rows = (
+        client.table("raw_snapshots")
+        .select("snapshot_date")
+        .eq("endpoint", "all_players")
+        .order("snapshot_date")
+        .execute()
+        .data
+        or []
+    )
+    return sorted({r["snapshot_date"] for r in rows if r.get("snapshot_date")})
+
+
+@st.cache_data(ttl=CACHE_TTL)
+def load_recent_daily(fechas: tuple[str, ...]) -> pd.DataFrame:
+    """Snapshots de los días indicados, normalmente hoy y ayer.
+
+    El mercado solo compara el último día con el anterior. El resto del
+    histórico se pide por jugador cuando de verdad hace falta, en su ficha.
+    """
+    if not fechas:
+        return _df([], ["snapshot_date", "player_id", "market_value", "points", "average_points", "played_matches", "minutes_played"])
+    client = get_supabase_client()
     daily = fetch_all(
         lambda: client.table("player_daily")
         .select("snapshot_date, player_id, market_value, points, average_points, played_matches, minutes_played")
+        .in_("snapshot_date", list(fechas))
         .order("snapshot_date")
         .order("player_id")
     )
-    df_daily = _df(daily, ["snapshot_date", "player_id", "market_value", "points", "average_points", "played_matches", "minutes_played"])
+    return _df(
+        daily,
+        ["snapshot_date", "player_id", "market_value", "points", "average_points", "played_matches", "minutes_played"],
+    )
 
-    return df_players, df_daily, df_teams
+
+@st.cache_data(ttl=CACHE_TTL)
+def load_player_history(player_id: str) -> pd.DataFrame:
+    """Cotización completa de un jugador, para su ficha. Son 57 filas, no 48.000."""
+    client = get_supabase_client()
+    rows = fetch_all(
+        lambda: client.table("player_daily")
+        .select("snapshot_date, player_id, market_value, points")
+        .eq("player_id", str(player_id))
+        .order("snapshot_date")
+    )
+    return _df(rows, ["snapshot_date", "player_id", "market_value", "points"])
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_TTL)
 def load_league_market() -> pd.DataFrame:
     """Carga los jugadores actualmente listados en el mercado de la liga privada."""
     client = get_supabase_client()
@@ -92,7 +145,7 @@ def load_league_market() -> pd.DataFrame:
     return _df(rows, ["snapshot_date", "league_id", "market_id", "player_id", "price", "owner_team_id", "expires_at"])
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_TTL)
 def load_gameweek_stats() -> pd.DataFrame:
     """Carga las estadísticas por jornada."""
     client = get_supabase_client()
@@ -105,7 +158,7 @@ def load_gameweek_stats() -> pd.DataFrame:
     return _df(rows, ["player_id", "gameweek", "points", "minutes", "goals", "assists", "yellow_cards", "red_cards", "saves", "goals_conceded"])
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_TTL)
 def load_league_data(df_players: pd.DataFrame | None = None) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, str]]:
     """Carga la clasificación, los movimientos enriquecidos y los nombres de las ligas."""
     client = get_supabase_client()
@@ -391,7 +444,9 @@ def main():
 
     try:
         with st.spinner("Conectando con la base de datos de LaLiga Fantasy..."):
-            df_players, df_daily, df_teams = load_market_data()
+            df_players, df_teams = load_market_data()
+            dates_available = [date.fromisoformat(f) for f in load_snapshot_dates()]
+            df_daily = load_recent_daily(tuple(load_snapshot_dates()[-2:]))
             df_league_market = load_league_market()
             df_standings, df_movements, league_names = load_league_data(df_players)
             df_gw = load_gameweek_stats()
@@ -414,7 +469,6 @@ def main():
 
     # Normalizar tipos
     df_daily["snapshot_date"] = pd.to_datetime(df_daily["snapshot_date"])
-    dates_available = sorted(df_daily["snapshot_date"].dt.date.unique())
     num_days = len(dates_available)
     latest_date = dates_available[-1]
 
@@ -574,7 +628,11 @@ def main():
     # =========================================================================
     # PESTAÑA 1: MERCADO Y TENDENCIAS (MUY PRÁCTICO + FOTOS + RANKING + DINERO COMPACTO)
     # =========================================================================
-    with tab_market:
+    # Cada pestaña es un fragmento: así un clic dentro de ella (ordenar,
+    # cambiar de jugador, mover el deslizador) solo la redibuja a ella y no
+    # las otras tres, que Streamlit pintaría igualmente aunque no se vean.
+    @st.fragment
+    def _pestana_mercado():
         solo_mercado_tab = st.checkbox(
             "Solo lo que está en venta hoy en mi liga",
             value=st.query_params.get("mercado") == "1",
@@ -738,10 +796,18 @@ def main():
             )
         )
 
+
+    with tab_market:
+        _pestana_mercado()
+
     # =========================================================================
     # PESTAÑA 2: EVOLUCIÓN Y RENDIMIENTO HISTÓRICO (GRÁFICAS INTERACTIVAS)
     # =========================================================================
-    with tab_evolution:
+    # Cada pestaña es un fragmento: así un clic dentro de ella (ordenar,
+    # cambiar de jugador, mover el deslizador) solo la redibuja a ella y no
+    # las otras tres, que Streamlit pintaría igualmente aunque no se vean.
+    @st.fragment
+    def _pestana_jugador():
         render_html(
             ui.section(
                 "Ficha del jugador",
@@ -759,7 +825,9 @@ def main():
         )
 
         if selected_player_id:
-            df_p_history = df_daily[df_daily["player_id"] == str(selected_player_id)].sort_values("snapshot_date")
+            df_p_history = load_player_history(str(selected_player_id))
+            if not df_p_history.empty:
+                df_p_history["snapshot_date"] = pd.to_datetime(df_p_history["snapshot_date"])
             df_p_gw = df_gw[df_gw["player_id"] == str(selected_player_id)].sort_values("gameweek")
             p_info = df_players[df_players["id"] == str(selected_player_id)].iloc[0]
 
@@ -906,10 +974,18 @@ def main():
                     )
                 render_html(ui.data_table(gw_columns, gw_rows, max_height="46vh"))
 
+
+    with tab_evolution:
+        _pestana_jugador()
+
     # =========================================================================
     # PESTAÑA 3: MINUTOS Y TITULARIDAD
     # =========================================================================
-    with tab_minutes:
+    # Cada pestaña es un fragmento: así un clic dentro de ella (ordenar,
+    # cambiar de jugador, mover el deslizador) solo la redibuja a ella y no
+    # las otras tres, que Streamlit pintaría igualmente aunque no se vean.
+    @st.fragment
+    def _pestana_minutos():
         render_html(
             ui.section(
                 "Minutos y titularidad",
@@ -1008,10 +1084,18 @@ def main():
                 )
             render_html(ui.data_table(min_columns, min_rows))
 
+
+    with tab_minutes:
+        _pestana_minutos()
+
     # =========================================================================
     # PESTAÑA 4: LIGA PRIVADA Y CAJA (FORMATO COMPACTO + CAJA ESTIMADA REAL)
     # =========================================================================
-    with tab_league:
+    # Cada pestaña es un fragmento: así un clic dentro de ella (ordenar,
+    # cambiar de jugador, mover el deslizador) solo la redibuja a ella y no
+    # las otras tres, que Streamlit pintaría igualmente aunque no se vean.
+    @st.fragment
+    def _pestana_liga():
         render_html(ui.section("Liga privada", "trophy"))
 
         # La cuenta puede tener varias ligas. Hay que separarlas antes de calcular nada:
@@ -1101,7 +1185,18 @@ def main():
             render_html(ui.data_table(cls_columns, cls_rows, max_height="none"))
 
         if not df_league_movements.empty:
-            render_html(ui.section("Movimientos de la liga", "trend_up"))
+            # 881 movimientos serían 881 filas de HTML en cada redibujado. Se
+            # muestran los últimos, que es lo que se mira; el resto sigue en la
+            # base de datos y lo usa el análisis, no la vista.
+            LIMITE_MOVIMIENTOS = 200
+            df_mov_vista = df_league_movements.dropna(subset=["activity_desc"]).head(LIMITE_MOVIMIENTOS)
+            total_mov = len(df_league_movements)
+            nota_mov = (
+                f"Los {LIMITE_MOVIMIENTOS} más recientes de {total_mov}."
+                if total_mov > LIMITE_MOVIMIENTOS
+                else f"{total_mov} movimientos registrados."
+            )
+            render_html(ui.section("Movimientos de la liga", "trend_up", nota_mov))
 
             # Un icono por tipo: entra dinero, sale dinero, o ninguna de las dos
             # cosas. Es lo primero que se busca al repasar la actividad de la liga.
@@ -1115,7 +1210,7 @@ def main():
                 {"label": "Importe", "align": "right", "cls": "num"},
             ]
             mov_rows = []
-            for _, m in df_league_movements.dropna(subset=["activity_desc"]).iterrows():
+            for _, m in df_mov_vista.iterrows():
                 tipo = m.get("activity_type")
                 glyph = ui.icon(iconos_actividad.get(tipo, "dot"), 15, "mv-i")
                 importe = m.get("amount")
@@ -1137,6 +1232,10 @@ def main():
                 )
             render_html(ui.data_table(mov_columns, mov_rows, max_height="52vh"))
 
+
+
+    with tab_league:
+        _pestana_liga()
 
 if __name__ == "__main__":
     main()
