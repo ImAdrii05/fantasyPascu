@@ -990,7 +990,7 @@ def main():
             ui.section(
                 "Minutos y titularidad",
                 "clock",
-                "Ordenado por puntos conseguidos por cada millón de valor: arriba están los que más rinden para lo que cuestan.",
+                "Ordenado por puntos conseguidos por cada millón de valor: arriba están los que más rinden para lo que cuestan. Solo futbolistas.",
             )
         )
         render_html(
@@ -1037,9 +1037,23 @@ def main():
                 else None,
                 axis=1,
             )
+            # Fuera los entrenadores. No pisan el campo, así que salían con 0 minutos
+            # y 0 puntos por millón, y un ranking de rendimiento sobre el césped no
+            # dice nada de ellos: solo ensuciaba el final de la tabla.
+            df_min = df_min[df_min["position"] != "Entrenador"]
+
             df_min["foto"] = df_min["image_url"].fillna(NO_PLAYER_IMG)
             df_min["valor_fmt"] = df_min["market_value"].apply(lambda v: format_money(v))
 
+            if sel_position == "Entrenador":
+                render_html(
+                    ui.notice(
+                        "Los entrenadores no salen en esta tabla: no juegan minutos, así que "
+                        "medir su rendimiento por minuto jugado no significaría nada. "
+                        "Sus puntos sí cuentan en el mercado."
+                    )
+                )
+                return
             if sel_position != "Todas":
                 df_min = df_min[df_min["position"] == sel_position]
             if sel_team != "Todos":

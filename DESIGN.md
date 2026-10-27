@@ -148,6 +148,10 @@ fábrica, que aquí significaría "ha bajado de precio".
    usuario; el cálculo sigue en `analytics/money.py` por si vuelve.
 3. **Los minutos no son probabilidad de alineación**, y el panel lo dice donde
    se muestran.
+4. **Los entrenadores no entran en el ranking de minutos.** No pisan el campo,
+   así que salían con 0 minutos y 0 puntos por millón: un cero que parece un
+   rendimiento pésimo cuando en realidad es una categoría que no aplica. En el
+   mercado sí están, porque ahí sus puntos y su precio son reales.
 
 ## Carga de datos: lo que se pide y cuándo
 
