@@ -322,8 +322,8 @@ def load_gameweek_stats() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300)
-def load_league_data(df_players: pd.DataFrame | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Carga la clasificación y movimientos enriquecidos de la liga privada."""
+def load_league_data(df_players: pd.DataFrame | None = None) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, str]]:
+    """Carga la clasificación, los movimientos enriquecidos y los nombres de las ligas."""
     client = get_supabase_client()
 
     standings = fetch_all(
@@ -414,7 +414,16 @@ def load_league_data(df_players: pd.DataFrame | None = None) -> tuple[pd.DataFra
         })
 
     df_movements = pd.DataFrame(mov_rows) if mov_rows else pd.DataFrame()
-    return df_standings, df_movements
+
+    league_names: dict[str, str] = {}
+    try:
+        rows = client.table("leagues").select("id, name").execute().data or []
+        league_names = {str(r["id"]): r["name"] for r in rows if r.get("id")}
+    except Exception:
+        # Sin la migración 004 no hay tabla de ligas: el selector muestra solo IDs.
+        pass
+
+    return df_standings, df_movements, league_names
 
 
 def get_position_class(pos_name: str | None) -> str:
@@ -431,6 +440,16 @@ def get_position_class(pos_name: str | None) -> str:
     elif "del" in p:
         return "pos-badge pos-del"
     return "pos-badge pos-ent"
+
+
+def format_points(val: int | float | None) -> str:
+    """Formatea puntos. La API devuelve null para equipos sin puntuar: eso es "sin datos", no un cero."""
+    if val is None or pd.isna(val):
+        return "—"
+    try:
+        return f"{float(val):g}"
+    except (ValueError, TypeError):
+        return str(val)
 
 
 def format_money(val: int | float | None, with_sign: bool = False) -> str:
@@ -488,7 +507,7 @@ def main():
         with st.spinner("Conectando con la base de datos de LaLiga Fantasy..."):
             df_players, df_daily, df_teams = load_market_data()
             df_league_market = load_league_market()
-            df_standings, df_movements = load_league_data(df_players)
+            df_standings, df_movements, league_names = load_league_data(df_players)
             df_gw = load_gameweek_stats()
     except Exception as e:
         st.error(f"❌ Error al conectar con Supabase: {e}")
@@ -499,7 +518,7 @@ def main():
         st.info(
             "ℹ️ **Aún no hay datos en la base de datos.**\n\n"
             "1. Asegúrate de haber ejecutado la migración DDL en Supabase (`db/migrations/001_init.sql`).\n"
-            "2. Coloca tu token capturado en `secrets/token.json`.\n"
+            "2. Inicia sesión con `python scripts/login.py` (Apple, Google o email).\n"
             "3. Ejecuta el primer snapshot diario en tu terminal:\n"
             "   ```bash\n"
             "   python -m fantasy.collect.run_daily\n"
@@ -1135,11 +1154,40 @@ def main():
     with tab_league:
         st.subheader("🏆 Clasificación y Estimación de Caja de Rivales")
 
-        if df_standings.empty:
+        # La cuenta puede tener varias ligas. Hay que separarlas antes de calcular nada:
+        # la caja estimada suma movimientos, y mezclar los de dos ligas la falsearía.
+        league_ids = set(league_names)
+        if not df_standings.empty:
+            league_ids |= set(df_standings["league_id"].astype(str))
+        league_ids = sorted(league_ids)
+
+        selected_league = None
+        if len(league_ids) > 1:
+            selected_league = st.selectbox(
+                "Liga",
+                league_ids,
+                format_func=lambda league_id: league_names.get(league_id, f"Liga {league_id}"),
+            )
+        elif league_ids:
+            selected_league = league_ids[0]
+            st.caption(league_names.get(selected_league, f"Liga {selected_league}"))
+
+        df_league_standings = (
+            df_standings[df_standings["league_id"].astype(str) == selected_league]
+            if selected_league and not df_standings.empty
+            else pd.DataFrame()
+        )
+        df_league_movements = (
+            df_movements[df_movements["league_id"].astype(str) == selected_league]
+            if selected_league and not df_movements.empty
+            else pd.DataFrame()
+        )
+
+        if df_league_standings.empty:
             st.info("No hay datos de clasificación registrados para tu liga privada todavía.")
         else:
-            latest_league_date = df_standings["snapshot_date"].max()
-            df_cur_standings = df_standings[df_standings["snapshot_date"] == latest_league_date].copy()
+            latest_league_date = df_league_standings["snapshot_date"].max()
+            df_cur_standings = df_league_standings[df_league_standings["snapshot_date"] == latest_league_date].copy()
 
             # Podium para los 3 primeros con formato compacto
             if len(df_cur_standings) >= 3:
@@ -1153,7 +1201,7 @@ def main():
                             <div style="font-size: 2rem;">🥇</div>
                             <div style="font-size: 1.3rem; font-weight: 800; color: #facc15;">{top3[0]['team_name']}</div>
                             <div style="color: #cbd5e1; font-size: 0.9rem;">{top3[0].get('manager_name', 'Mánager')}</div>
-                            <div style="font-size: 1.5rem; font-weight: 800; color: white; margin-top: 8px;">{top3[0].get('points', 0)} pts</div>
+                            <div style="font-size: 1.5rem; font-weight: 800; color: white; margin-top: 8px;">{format_points(top3[0].get('points'))} pts</div>
                             <div style="color: #94a3b8; font-size: 0.85rem;">Plantilla: {format_money(top3[0].get('team_value'))}</div>
                         </div>
                         """
@@ -1165,7 +1213,7 @@ def main():
                             <div style="font-size: 1.7rem;">🥈</div>
                             <div style="font-size: 1.15rem; font-weight: 700; color: #e2e8f0;">{top3[1]['team_name']}</div>
                             <div style="color: #94a3b8; font-size: 0.85rem;">{top3[1].get('manager_name', 'Mánager')}</div>
-                            <div style="font-size: 1.3rem; font-weight: 800; color: white; margin-top: 6px;">{top3[1].get('points', 0)} pts</div>
+                            <div style="font-size: 1.3rem; font-weight: 800; color: white; margin-top: 6px;">{format_points(top3[1].get('points'))} pts</div>
                             <div style="color: #94a3b8; font-size: 0.8rem;">Plantilla: {format_money(top3[1].get('team_value'))}</div>
                         </div>
                         """
@@ -1177,7 +1225,7 @@ def main():
                             <div style="font-size: 1.5rem;">🥉</div>
                             <div style="font-size: 1.1rem; font-weight: 700; color: #d97706;">{top3[2]['team_name']}</div>
                             <div style="color: #94a3b8; font-size: 0.85rem;">{top3[2].get('manager_name', 'Mánager')}</div>
-                            <div style="font-size: 1.2rem; font-weight: 800; color: white; margin-top: 6px;">{top3[2].get('points', 0)} pts</div>
+                            <div style="font-size: 1.2rem; font-weight: 800; color: white; margin-top: 6px;">{format_points(top3[2].get('points'))} pts</div>
                             <div style="color: #94a3b8; font-size: 0.8rem;">Plantilla: {format_money(top3[2].get('team_value'))}</div>
                         </div>
                         """
@@ -1186,7 +1234,7 @@ def main():
             st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
 
             # Estimación de caja por movimientos
-            cajas_estimadas = calculate_estimated_cash(df_cur_standings, df_movements)
+            cajas_estimadas = calculate_estimated_cash(df_cur_standings, df_league_movements)
             if not cajas_estimadas.empty:
                 st.markdown("#### 💰 Estimación de Caja Disponible")
                 st.caption(
@@ -1227,9 +1275,9 @@ def main():
                     hide_index=True,
                 )
 
-        if not df_movements.empty:
+        if not df_league_movements.empty:
             st.markdown("#### 🔄 Últimos Movimientos y Actividad de la Liga")
-            df_movements_display = df_movements.copy()
+            df_movements_display = df_league_movements.copy()
             df_movements_display["amount_fmt"] = df_movements_display["amount"].apply(lambda v: format_money(v))
 
             cols_mov = ["movement_date_str", "activity_desc", "player_name", "manager_name", "amount_fmt"]

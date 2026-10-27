@@ -457,3 +457,42 @@ class MarketItem:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+
+
+@dataclass
+class League:
+    """Liga privada en la que participa el usuario autenticado.
+
+    Sale del endpoint de ligas del usuario. `id` y `name` son los que lee también
+    LaLigaApp; `team.money` es el saldo propio (el único saldo que da la API, ver
+    collect/league.py). El resto se lee de forma tolerante por si cambia el formato.
+    """
+    id: str
+    name: str
+    team_id: str | None = None
+    team_money: int | None = None
+
+    @classmethod
+    def from_api(cls, data: dict[str, Any]) -> "League":
+        league_id = str(data.get("id") or data.get("leagueId") or "")
+        name = data.get("name") or f"Liga {league_id}"
+
+        team = data.get("team") if isinstance(data.get("team"), dict) else {}
+        team_id = team.get("id") or data.get("teamId")
+
+        money = team.get("money") if team.get("money") is not None else team.get("teamMoney")
+        if money is not None:
+            try:
+                money = int(money)
+            except (ValueError, TypeError):
+                money = None
+
+        return cls(
+            id=league_id,
+            name=str(name),
+            team_id=str(team_id) if team_id else None,
+            team_money=money,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

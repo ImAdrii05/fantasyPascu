@@ -36,9 +36,10 @@ class AuthExpired(FantasyAuthError):
     """Lanzada cuando el refresh_token ha caducado o ha sido revocado."""
 
     def __init__(self, details: str = ""):
+        self.details = details
         message = (
             "El refresh_token ha caducado o fue revocado por el servidor de autenticación. "
-            "Repite la captura manual: ver README §Captura de token."
+            "Vuelve a iniciar sesión con `python scripts/login.py`."
         )
         if details:
             message += f" Detalle: {details}"
@@ -61,7 +62,7 @@ class AuthMissing(AuthExpired):
             "No hay ningún token almacenado. Se ha buscado, por este orden, en: la tabla "
             "`auth_state` de Supabase, la variable FANTASY_TOKEN_JSON y el fichero local "
             "secrets/token.json.\n"
-            "  - En local: captura el token siguiendo el README §Captura de token.\n"
+            "  - En local: inicia sesión con `python scripts/login.py`.\n"
             "  - En CI: la tabla `auth_state` está vacía o los secrets de Supabase no "
             "llegan al job. Ejecuta el job una vez en local con el token puesto; eso "
             "siembra `auth_state` y deja el cron operativo."
@@ -83,3 +84,15 @@ class AuthBackendChanged(FantasyAuthError):
             f"Primeros 500 caracteres de la respuesta (tokens censurados):\n{sanitized}"
         )
         super().__init__(message)
+
+
+class LoginFailed(FantasyAuthError):
+    """Lanzada cuando el login interactivo no termina con un código válido.
+
+    Cubre lo que puede salir mal entre abrir la página de LaLiga y canjear el código:
+    ventana cerrada antes de terminar, tiempo agotado, error devuelto por B2C (o por
+    Apple/Google a través de B2C), `state` que no cuadra o código rechazado al canjearlo.
+    """
+
+    def __init__(self, details: str):
+        super().__init__(f"El inicio de sesión no se completó: {details}")

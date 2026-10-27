@@ -28,8 +28,8 @@ def main():
 
     if not current_tokens:
         print("[X] No se encontro ningun token configurado.")
-        print("    Coloca el token capturado en secrets/token.json o en FANTASY_TOKEN_JSON.")
-        print("    Consulta README.md seccion 'Captura de token' para ver las instrucciones.")
+        print("    Inicia sesion con: python scripts/login.py (Apple, Google o email).")
+        print("    Consulta README.md seccion 'Inicio de sesion' para ver las alternativas.")
         sys.exit(1)
 
     print(f"[*] Almacen de token detectado: {store.__class__.__name__}")

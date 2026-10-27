@@ -12,9 +12,11 @@ import sys
 import time
 
 from fantasy.api.client import FantasyApiClient
+from fantasy.api.models import League
 from fantasy.collect.players import collect_players
 from fantasy.collect.league import collect_league
-from fantasy.store.supabase import get_supabase_store
+from fantasy.collect.raw import persist_raw
+from fantasy.store.supabase import SupabaseStore, get_supabase_store
 from fantasy import config
 
 logging.basicConfig(
@@ -23,6 +25,44 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("fantasy.collect.daily")
+
+
+def resolve_leagues(api_client: FantasyApiClient, store: SupabaseStore, errors: list[str]) -> list[League]:
+    """Ligas a recolectar: las de FANTASY_LEAGUE_ID o, si está vacío, todas las de la cuenta.
+
+    Las ligas del usuario se piden siempre, aunque haya IDs fijados: es una sola
+    petición y es la que trae los nombres. Si falla y hay IDs fijados, se sigue con
+    ellos; si falla y no los hay, no hay ligas que recolectar (y queda registrado).
+    """
+    fixed_ids = config.configured_league_ids()
+    try:
+        user_leagues, raw = api_client.get_user_leagues()
+    except Exception as e:
+        msg = f"No se pudieron obtener las ligas de la cuenta: {e}"
+        logger.warning(msg, exc_info=True)
+        errors.append(msg)
+        return [League(id=league_id, name=f"Liga {league_id}") for league_id in fixed_ids]
+
+    try:
+        persist_raw("user_leagues", raw, store=store)
+    except Exception as e:
+        logger.warning(f"No se pudo guardar el JSON crudo de las ligas: {e}")
+
+    if fixed_ids:
+        by_id = {league.id: league for league in user_leagues}
+        leagues = [by_id.get(league_id) or League(id=league_id, name=f"Liga {league_id}") for league_id in fixed_ids]
+    else:
+        leagues = user_leagues
+        logger.info(f"FANTASY_LEAGUE_ID vacío: detectadas {len(leagues)} ligas en la cuenta.")
+
+    try:
+        store.upsert_leagues(leagues)
+    except Exception as e:
+        # Sin la migración 004 la tabla no existe. No impide recolectar: solo deja el
+        # dashboard sin nombres de liga.
+        logger.warning(f"No se pudieron guardar las ligas (¿falta la migración 004_leagues.sql?): {e}")
+
+    return leagues
 
 
 def run_daily() -> int:
@@ -52,6 +92,10 @@ def run_daily() -> int:
     errors: list[str] = []
     players_success = False
 
+    leagues = resolve_leagues(api_client, store, errors)
+    for league in leagues:
+        logger.info(f"  • Liga {league.id}: {league.name}")
+
     # SUB-JOB 1: Jugadores y mercado global (CIMIENTO PRINCIPAL)
     logger.info("--- [1/2] Recolección Global de Jugadores y Equipos ---")
     try:
@@ -60,7 +104,8 @@ def run_daily() -> int:
             store=store,
             snapshot_date=today,
             # El detalle (minutos y stats finas) exige un league_id: el endpoint lo pide.
-            league_id=config.FANTASY_LEAGUE_ID or None,
+            # Los datos del jugador no dependen de la liga, así que basta con una.
+            league_id=leagues[0].id if leagues else None,
         )
         summary.update(player_counts)
         players_success = True
@@ -70,25 +115,26 @@ def run_daily() -> int:
         logger.error(err_msg, exc_info=True)
         errors.append(err_msg)
 
-    # SUB-JOB 2: Liga Privada (Clasificación, Movimientos y Mercado)
-    league_id = config.FANTASY_LEAGUE_ID
-    if league_id:
-        logger.info(f"--- [2/2] Recolección de Liga Privada (ID: {league_id}) ---")
+    # SUB-JOB 2: Ligas Privadas (Clasificación, Movimientos y Mercado), una a una:
+    # el fallo de una liga no impide recolectar las demás.
+    for league in leagues:
+        logger.info(f"--- [2/2] Recolección de Liga Privada {league.name} (ID: {league.id}) ---")
         try:
             league_counts = collect_league(
-                league_id=league_id,
+                league_id=league.id,
                 api_client=api_client,
                 store=store,
                 snapshot_date=today,
             )
-            summary.update(league_counts)
-            logger.info("✅ Sub-job de liga privada completado correctamente.")
+            for key, value in league_counts.items():
+                summary[key] += value
+            logger.info(f"✅ Liga {league.name} completada correctamente.")
         except Exception as e:
-            warn_msg = f"Fallo en recolección de liga privada {league_id}: {e}"
+            warn_msg = f"Fallo en recolección de liga privada {league.id}: {e}"
             logger.warning(warn_msg, exc_info=True)
             errors.append(warn_msg)
-    else:
-        logger.info("ℹ️ FANTASY_LEAGUE_ID no está configurado. Omitiendo recolección de liga privada.")
+    if not leagues:
+        logger.info("ℹ️ No hay ligas que recolectar. Omitiendo recolección de liga privada.")
 
     # RESUMEN FINAL
     elapsed = time.time() - start_time

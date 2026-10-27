@@ -25,6 +25,24 @@ def get_token_endpoint() -> str:
         return f"https://{tenant}.b2clogin.com/{tenant}.onmicrosoft.com/{policy}/oauth2/v2.0/token"
 
 
+def get_authorize_endpoint() -> str:
+    """URL del endpoint de autorización (login interactivo). Es la de token cambiando el final."""
+    base, sep, query = get_token_endpoint().partition("?")
+    return base.removesuffix("/token") + "/authorize" + sep + query
+
+
+def default_scope_for_client(client_id: str | None) -> str:
+    """Scope con el que se pidió el token según el cliente que lo emitió.
+
+    Cada cliente tiene el suyo: el web lleva su propio client_id como recurso y el de la
+    app móvil no. Refrescar un token del login interactivo con el scope del cliente web
+    pediría un recurso ajeno y B2C lo rechazaría.
+    """
+    if client_id and client_id == config.B2C_LOGIN_CLIENT_ID:
+        return config.B2C_LOGIN_SCOPE
+    return config.B2C_SCOPE
+
+
 def refresh_access_token(
     refresh_token: str,
     client_id: str | None = None,
@@ -49,16 +67,50 @@ def refresh_access_token(
     if not refresh_token:
         raise AuthExpired("No se proporcionó ningún refresh_token.")
 
-    url = get_token_endpoint()
     used_client_id = client_id or config.B2C_CLIENT_ID
-    used_scope = scope or config.B2C_SCOPE
-
     payload = {
         "grant_type": "refresh_token",
         "client_id": used_client_id,
-        "scope": used_scope,
+        "scope": scope or default_scope_for_client(used_client_id),
         "refresh_token": refresh_token,
     }
+    return request_tokens(payload, timeout=timeout)
+
+
+def exchange_code_for_tokens(
+    code: str,
+    code_verifier: str,
+    client_id: str | None = None,
+    redirect_uri: str | None = None,
+    scope: str | None = None,
+    timeout: int = 15,
+) -> TokenSet:
+    """Canjea el código de autorización del login interactivo (PKCE) por tokens.
+
+    Raises:
+        AuthExpired: Si B2C rechaza el código (caducado, ya usado o verifier incorrecto).
+        AuthBackendChanged: Si la respuesta no es JSON o no incluye tokens válidos.
+    """
+    used_client_id = client_id or config.B2C_LOGIN_CLIENT_ID
+    payload = {
+        "grant_type": "authorization_code",
+        "client_id": used_client_id,
+        "code": code,
+        "redirect_uri": redirect_uri or config.B2C_LOGIN_REDIRECT_URI,
+        "code_verifier": code_verifier,
+        "scope": scope or default_scope_for_client(used_client_id),
+    }
+    return request_tokens(payload, timeout=timeout)
+
+
+def request_tokens(payload: dict[str, str], timeout: int = 15) -> TokenSet:
+    """POST al endpoint de token de B2C con discriminación de errores.
+
+    Común al refresco y al canje del código: los dos hablan con el mismo endpoint y
+    fallan de las mismas maneras.
+    """
+    url = get_token_endpoint()
+    used_client_id = payload["client_id"]
 
     headers = {
         "Content-Type": "application/x-www-form-urlencoded",

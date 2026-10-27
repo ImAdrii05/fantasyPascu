@@ -4,7 +4,7 @@ import responses
 import pytest
 
 from fantasy.api import FantasyApiClient, FantasyApiError
-from fantasy.api.models import Team, Player, LeagueStanding, LeagueMovement, PlayerGameweekStat
+from fantasy.api.models import Team, Player, League, LeagueStanding, LeagueMovement, PlayerGameweekStat
 from fantasy.collect.players import extract_gameweek_stats
 from fantasy.collect.player_details import parse_player_detail
 from fantasy.auth.store import BaseTokenStore, set_token_store
@@ -236,3 +236,32 @@ def test_extract_gameweek_stats_lee_weekpoints_reales():
     assert stats[0].points == 10
     # El listado no trae minutos: deben quedar a None, nunca a 0.
     assert stats[0].minutes is None
+
+def test_league_from_api_tolerant():
+    league = League.from_api({"id": 123, "name": "Liga Pascu", "team": {"id": "t9", "money": "4500000"}})
+    assert league.id == "123"
+    assert league.name == "Liga Pascu"
+    assert league.team_id == "t9"
+    assert league.team_money == 4500000
+
+    # Sin equipo ni nombre: no inventa saldo, y el nombre cae a algo reconocible.
+    bare = League.from_api({"id": "7"})
+    assert bare.name == "Liga 7"
+    assert bare.team_id is None
+    assert bare.team_money is None
+
+
+@responses.activate
+def test_get_user_leagues_lista_plana_y_envuelta():
+    from fantasy.api import endpoints
+
+    client = FantasyApiClient(throttle_seconds=0)
+    url = endpoints.user_leagues_url()
+
+    responses.add(responses.GET, url, json=[{"id": "1", "name": "A"}, {"id": "2", "name": "B"}, {"name": "sin id"}])
+    leagues, _ = client.get_user_leagues()
+    assert [(lg.id, lg.name) for lg in leagues] == [("1", "A"), ("2", "B")]
+
+    responses.replace(responses.GET, url, json={"elements": [{"id": "3", "name": "C"}]})
+    leagues, _ = client.get_user_leagues()
+    assert [lg.id for lg in leagues] == ["3"]
