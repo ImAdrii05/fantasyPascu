@@ -19,6 +19,7 @@ from supabase import create_client
 
 from fantasy import config
 from fantasy.store.supabase import fetch_all
+from fantasy.analytics.clauses import CRITERIOS, MIN_PCT_MINUTOS, VENTANA_FORMA, enriquecer_clausulas, ranking_clausulas
 from fantasy.dashboard import ui
 
 # Configuración de página
@@ -166,6 +167,20 @@ def load_squads(league_id: str) -> tuple[pd.DataFrame, str]:
         "clause_locked_until", "is_shielded", "player_team_id", "clause_open",
     ]
     return _df(filas, columnas), datetime.now().strftime("%H:%M:%S")
+
+
+@st.cache_data(ttl=CACHE_TTL)
+def load_my_teams() -> dict[str, str]:
+    """Tu equipo en cada liga ({league_id: team_id}), de la tabla `leagues`.
+
+    Sirve para no ofrecerte como clausulables a tus propios jugadores. Sin la
+    migración 004 no hay tabla y se devuelve vacío: entonces no se excluye nada.
+    """
+    try:
+        rows = get_supabase_client().table("leagues").select("id, team_id").execute().data or []
+    except Exception:
+        return {}
+    return {str(r["id"]): str(r["team_id"]) for r in rows if r.get("id") and r.get("team_id")}
 
 
 def formatear_cuenta_atras(cuando, ahora=None) -> str:
@@ -1235,7 +1250,11 @@ def main():
         # valor de mercado. Una cláusula igual al valor es una ganga.
         df_squad["sobrecoste"] = df_squad["buyout_clause"] - df_squad["market_value"]
 
-        abiertas = int(df_squad["abierta"].sum())
+        # Tus propios jugadores no se pueden clausular: no cuentan como abiertas.
+        mi_equipo = load_my_teams().get(str(liga_sel))
+        df_squad["es_mio"] = df_squad["league_team_id"].astype(str) == mi_equipo if mi_equipo else False
+
+        abiertas = int((df_squad["abierta"] & ~df_squad["es_mio"]).sum())
         render_html(
             ui.stat_row(
                 [
@@ -1256,12 +1275,44 @@ def main():
         )
 
         if vista == "Cláusulas abiertas":
-            df_v = df_squad[df_squad["abierta"]].copy()
-            nota = (
-                f"{len(df_v)} jugadores clausulables ahora mismo, de menor a mayor sobrecoste "
-                "sobre su valor de mercado."
+            df_abiertas = enriquecer_clausulas(df_squad[df_squad["abierta"] & ~df_squad["es_mio"]], df_gw)
+            c_crit, c_pres = st.columns([1, 1.4])
+            with c_crit:
+                criterio = st.selectbox(
+                    "Ordenar por",
+                    list(CRITERIOS),
+                    format_func=lambda k: CRITERIOS[k].etiqueta,
+                    key="criterio_clausulas",
+                    help="El rendimiento por millón se calcula sobre la cláusula, que es lo que pagarías.",
+                )
+            with c_pres:
+                # Escalones en millones: un deslizador de euros a secas no deja
+                # elegir con precisión entre 2 M y 3 M cuando el máximo es 150 M.
+                tope = df_abiertas["buyout_clause"].max()
+                escalones = [m * 1_000_000 for m in (1, 2, 3, 5, 7, 10, 15, 20, 30, 40, 50, 75, 100, 150, 200)]
+                escalones = [e for e in escalones if pd.isna(tope) or e < tope] + [None]
+                presupuesto = None
+                if len(escalones) > 1:
+                    presupuesto = st.select_slider(
+                        "Cláusula máxima",
+                        options=escalones,
+                        value=None,
+                        format_func=lambda e: "Sin límite" if e is None else format_money(e),
+                        key="presupuesto_clausulas",
+                    )
+            solo_juegan = st.checkbox(
+                f"Solo los que juegan (al menos {MIN_PCT_MINUTOS:.0f}% de los minutos en las "
+                f"últimas {VENTANA_FORMA} jornadas)",
+                value=True,
+                key="solo_juegan_clausulas",
+                help="Sin este filtro, un suplente de 0,3 M con dos apariciones encabeza los "
+                "puntos por millón aunque no juegue nunca.",
             )
-            df_v = df_v.sort_values("sobrecoste")
+            df_v = ranking_clausulas(df_abiertas, criterio, solo_juegan=solo_juegan, clausula_max=presupuesto)
+            nota = (
+                f"{len(df_v)} de {len(df_abiertas)} cláusulas abiertas, ordenadas por "
+                f"{CRITERIOS[criterio].explicacion}."
+            )
         else:
             managers = sorted(df_squad["manager_name"].dropna().unique())
             quien = st.selectbox("Mánager", managers, key="manager_plantilla")
@@ -1276,25 +1327,61 @@ def main():
 
         render_html(f'<p class="sc-n">{nota}</p>')
 
-        columnas = [
-            {"label": "Jugador", "align": "left"},
-            {"label": "Mánager", "align": "left", "cls": "hide-sm"},
-            {"label": "Valor", "align": "right", "cls": "num"},
-            {"label": "Cláusula", "align": "right", "cls": "num"},
-            {"label": "Sobrecoste", "align": "right", "cls": "num"},
-            {"label": "Se abre", "align": "right"},
-        ]
-
-        filas = []
-        for _, r in df_v.head(200).iterrows():
-            sobre = r.get("sobrecoste")
+        def sobrecoste_txt(sobre) -> str:
             if pd.notnull(sobre) and sobre > 0:
-                sobre_txt = f'<span class="v-down">+{format_money(sobre)}</span>'
-            elif pd.notnull(sobre):
-                sobre_txt = f'<span class="v-up">{format_money(sobre)}</span>'
-            else:
-                sobre_txt = MUTED_DASH
-            filas.append(
+                return f'<span class="v-down">+{format_money(sobre)}</span>'
+            if pd.notnull(sobre):
+                return f'<span class="v-up">{format_money(sobre)}</span>'
+            return MUTED_DASH
+
+        def numero(valor, decimales: int = 0) -> str:
+            if valor is None or pd.isna(valor):
+                return MUTED_DASH
+            return f"{valor:.{decimales}f}".replace(".", ",")
+
+        if vista == "Cláusulas abiertas":
+            # Todas están abiertas: en vez de la hora de apertura, lo que sirve para
+            # decidir es cuánto rinde cada una por lo que cuesta. El ratio que se
+            # enseña es el del criterio elegido, para que la cifra explique el orden.
+            ratio_col, ratio_label = (
+                ("forma_por_millon", "Forma/M€") if criterio == "forma_millon" else ("pts_por_millon", "Pts/M€")
+            )
+            columnas = [
+                {"label": "Jugador", "align": "left"},
+                {"label": "Mánager", "align": "left", "cls": "hide-sm"},
+                {"label": "Cláusula", "align": "right", "cls": "num"},
+                {"label": "Sobrecoste", "align": "right", "cls": "num hide-sm"},
+                {"label": "Puntos", "align": "right", "cls": "num"},
+                {"label": f"Forma {VENTANA_FORMA}J", "align": "right", "cls": "num"},
+                {"label": ratio_label, "align": "right", "cls": "num"},
+                {"label": f"Minutos {VENTANA_FORMA}J", "align": "left", "cls": "hide-sm"},
+            ]
+            filas = [
+                [
+                    ui.player_cell(
+                        r["player_name"], r.get("club_name"), r.get("position"),
+                        r.get("image_url") or NO_PLAYER_IMG,
+                    ),
+                    str(r.get("manager_name") or ""),
+                    format_money(r.get("buyout_clause")),
+                    sobrecoste_txt(r.get("sobrecoste")),
+                    numero(r.get("points")),
+                    numero(r.get("forma")),
+                    numero(r.get(ratio_col), 1),
+                    ui.bar_cell(None if pd.isna(r.get("pct_minutos")) else r.get("pct_minutos")),
+                ]
+                for _, r in df_v.head(200).iterrows()
+            ]
+        else:
+            columnas = [
+                {"label": "Jugador", "align": "left"},
+                {"label": "Mánager", "align": "left", "cls": "hide-sm"},
+                {"label": "Valor", "align": "right", "cls": "num"},
+                {"label": "Cláusula", "align": "right", "cls": "num"},
+                {"label": "Sobrecoste", "align": "right", "cls": "num"},
+                {"label": "Se abre", "align": "right"},
+            ]
+            filas = [
                 [
                     ui.player_cell(
                         r["player_name"], r.get("club_name"), r.get("position"),
@@ -1303,12 +1390,13 @@ def main():
                     str(r.get("manager_name") or ""),
                     format_money(r.get("market_value")),
                     format_money(r.get("buyout_clause")),
-                    sobre_txt,
+                    sobrecoste_txt(r.get("sobrecoste")),
                     ui.tag("Escudo", "neutral")
                     if bool(r.get("is_shielded"))
                     else formatear_cuenta_atras(r.get("clause_locked_until"), ahora),
                 ]
-            )
+                for _, r in df_v.head(200).iterrows()
+            ]
         render_html(ui.data_table(columnas, filas))
 
 
