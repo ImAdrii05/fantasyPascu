@@ -7,7 +7,7 @@ import requests
 
 from fantasy.auth import get_access_token, AuthExpired
 from fantasy.api import endpoints
-from fantasy.api.models import Team, Player, LeagueStanding, LeagueMovement
+from fantasy.api.models import Team, Player, League, LeagueStanding, LeagueMovement
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +161,14 @@ class FantasyApiClient:
         items = raw if isinstance(raw, list) else (raw.get("elements") or (raw.get("data") or {}).get("elements") or (raw.get("data") if isinstance(raw.get("data"), list) else []))
         players = [Player.from_api(p) for p in items if isinstance(p, dict)]
         return players, raw
+
+    def get_user_leagues(self) -> tuple[list[League], Any]:
+        """Obtiene las ligas del usuario autenticado. Devuelve (lista_ligas, raw_json)."""
+        url = endpoints.user_leagues_url()
+        raw = self.get(url)
+        items = raw if isinstance(raw, list) else (raw.get("elements") or raw.get("leagues") or (raw.get("data") if isinstance(raw.get("data"), list) else []))
+        leagues = [League.from_api(item) for item in items if isinstance(item, dict)]
+        return [league for league in leagues if league.id], raw
 
     def get_league_market(self, league_id: str | int) -> tuple[list[dict[str, Any]], Any]:
         """Obtiene los jugadores en el mercado de una liga. Devuelve (items_mercado, raw_json)."""

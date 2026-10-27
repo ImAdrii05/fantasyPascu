@@ -58,7 +58,7 @@ def get_access_token(force_refresh: bool = False) -> str:
         if not current_tokens.refresh_token:
             raise AuthExpired(
                 "El token de acceso ha expirado y no existe un refresh_token disponible para renovarlo. "
-                "Repite la captura manual: ver README §Captura de token."
+                "Vuelve a iniciar sesión con `python scripts/login.py`."
             )
 
         new_tokens = refresh_access_token(

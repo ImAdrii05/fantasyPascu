@@ -5,7 +5,7 @@ import logging
 from typing import Any
 from supabase import create_client, Client
 
-from fantasy.api.models import Team, Player, PlayerGameweekStat, LeagueStanding, LeagueMovement, MarketItem
+from fantasy.api.models import Team, Player, PlayerGameweekStat, League, LeagueStanding, LeagueMovement, MarketItem
 from fantasy import config
 
 logger = logging.getLogger(__name__)
@@ -195,6 +195,25 @@ class SupabaseStore:
             count += len(chunk)
         logger.info(f"Upsert de {count} registros en player_gameweek_stats.")
         return count
+
+    def upsert_leagues(self, leagues: list[League]) -> int:
+        """Guarda las ligas del usuario (nombre y saldo propio). Requiere la migración 004."""
+        rows = [
+            {
+                "id": lg.id,
+                "name": lg.name,
+                "team_id": lg.team_id,
+                "team_money": lg.team_money,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            for lg in leagues
+            if lg.id
+        ]
+        if not rows:
+            return 0
+        self.client.table("leagues").upsert(rows, on_conflict="id").execute()
+        logger.info(f"Upsert de {len(rows)} ligas en Supabase.")
+        return len(rows)
 
     def upsert_league_standings(self, standings: list[LeagueStanding], snapshot_date: str | date | None = None) -> int:
         """Guarda la clasificación de la liga privada en la fecha actual (Idempotente)."""

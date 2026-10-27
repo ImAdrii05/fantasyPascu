@@ -21,6 +21,10 @@ dev = [
     "pytest>=8.0.0",
     "responses>=0.25.0",
 ]
+# Ventana de login automatizada (scripts/login.py). Sin esto queda el modo --manual.
+login = [
+    "playwright>=1.40.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

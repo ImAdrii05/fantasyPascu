@@ -78,8 +78,8 @@ def load_gameweek_stats() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300)
-def load_league_data() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Carga la clasificación y movimientos de la liga privada desde Supabase."""
+def load_league_data() -> tuple[pd.DataFrame, dict[str, str]]:
+    """Carga la clasificación de todas las ligas privadas y sus nombres desde Supabase."""
     client = get_supabase_client()
 
     standings = fetch_all(
@@ -87,12 +87,30 @@ def load_league_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     )
     df_standings = pd.DataFrame(standings) if standings else pd.DataFrame()
 
-    movements_res = (
-        client.table("league_movements").select("*").order("movement_date", desc=True).limit(100).execute()
-    )
-    df_movements = pd.DataFrame(movements_res.data) if movements_res.data else pd.DataFrame()
+    league_names: dict[str, str] = {}
+    try:
+        rows = client.table("leagues").select("id, name").execute().data or []
+        league_names = {str(r["id"]): r["name"] for r in rows if r.get("id")}
+    except Exception:
+        # Sin la migración 004 no hay tabla de ligas: el selector muestra solo IDs.
+        pass
 
-    return df_standings, df_movements
+    return df_standings, league_names
+
+
+@st.cache_data(ttl=300)
+def load_league_movements(league_id: str) -> pd.DataFrame:
+    """Carga los últimos movimientos de mercado de una liga privada."""
+    client = get_supabase_client()
+    movements_res = (
+        client.table("league_movements")
+        .select("*")
+        .eq("league_id", league_id)
+        .order("movement_date", desc=True)
+        .limit(100)
+        .execute()
+    )
+    return pd.DataFrame(movements_res.data) if movements_res.data else pd.DataFrame()
 
 
 def main():
@@ -110,7 +128,7 @@ def main():
     try:
         with st.spinner("Cargando datos históricos desde la base de datos..."):
             df_players, df_daily, df_teams = load_market_data()
-            df_standings, df_movements = load_league_data()
+            df_standings, league_names = load_league_data()
     except Exception as e:
         st.error(f"❌ Error al conectar con Supabase: {e}")
         st.stop()
@@ -120,7 +138,7 @@ def main():
         st.info(
             "ℹ️ **Aún no hay datos en la base de datos.**\n\n"
             "1. Asegúrate de haber ejecutado la migración DDL en Supabase (`db/migrations/001_init.sql`).\n"
-            "2. Coloca tu token capturado en `secrets/token.json`.\n"
+            "2. Inicia sesión con `python scripts/login.py` (Apple, Google o email).\n"
             "3. Ejecuta el primer snapshot diario en tu terminal:\n"
             "   ```bash\n"
             "   python -m fantasy.collect.run_daily\n"
@@ -352,12 +370,33 @@ def main():
     # PESTAÑA 4: LIGA PRIVADA
     with tab_league:
         st.subheader("Estado de la Liga Privada")
-        if df_standings.empty:
+        league_ids = set(league_names)
+        if not df_standings.empty:
+            league_ids |= set(df_standings["league_id"].astype(str))
+        league_ids = sorted(league_ids)
+
+        selected_league = None
+        if len(league_ids) > 1:
+            selected_league = st.selectbox(
+                "Liga",
+                league_ids,
+                format_func=lambda league_id: league_names.get(league_id, f"Liga {league_id}"),
+            )
+        elif league_ids:
+            selected_league = league_ids[0]
+            st.caption(league_names.get(selected_league, f"Liga {selected_league}"))
+
+        df_league_standings = (
+            df_standings[df_standings["league_id"].astype(str) == selected_league]
+            if selected_league and not df_standings.empty
+            else pd.DataFrame()
+        )
+        if df_league_standings.empty:
             st.info("No hay datos de clasificación registrados para tu liga privada todavía.")
         else:
-            latest_league_date = df_standings["snapshot_date"].max()
+            latest_league_date = df_league_standings["snapshot_date"].max()
             st.write(f"Clasificación más reciente ({latest_league_date}):")
-            df_cur_standings = df_standings[df_standings["snapshot_date"] == latest_league_date].copy()
+            df_cur_standings = df_league_standings[df_league_standings["snapshot_date"] == latest_league_date].copy()
             st.dataframe(
                 df_cur_standings[["position", "team_name", "manager_name", "points", "team_value"]],
                 column_config={
@@ -375,6 +414,13 @@ def main():
                 "La API devuelve el saldo en caja de los rivales siempre a nulo (comprobado), "
                 "así que no sabemos cuánto puede pujar cada uno. No lo deduzcas del valor de plantilla."
             )
+
+        df_movements = pd.DataFrame()
+        if selected_league:
+            try:
+                df_movements = load_league_movements(selected_league)
+            except Exception as e:
+                st.error(f"❌ Error al cargar los movimientos de la liga: {e}")
 
         if not df_movements.empty:
             st.subheader("Últimos Movimientos de Mercado")
