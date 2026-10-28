@@ -1,11 +1,18 @@
 """Tests del ranking de cláusulas abiertas (rendimiento por millón de cláusula)."""
 
+from datetime import datetime, timedelta, timezone
 import math
 
 import pandas as pd
 import pytest
 
-from fantasy.analytics.clauses import CRITERIOS, enriquecer_clausulas, ranking_clausulas
+from fantasy.analytics.clauses import (
+    CRITERIOS,
+    TODOS_CRITERIOS,
+    enriquecer_clausulas,
+    proximas_a_abrirse,
+    ranking_clausulas,
+)
 
 
 def squad():
@@ -85,3 +92,45 @@ def test_sin_estadisticas_por_jornada_no_filtra_ni_inventa_ceros():
     assert df["pct_minutos"].isna().all()
     # Sin datos de minutos el filtro no puede decidir: no vacía la tabla.
     assert len(ranking_clausulas(df, "pts_millon", solo_juegan=True)) == 4
+
+
+AHORA = datetime(2026, 10, 28, 12, 0, tzinfo=timezone.utc)
+
+
+def plantilla_con_bloqueos():
+    def fila(pid, horas, escudo=False, clausula=5_000_000):
+        return {
+            "player_id": pid, "player_name": f"J{pid}", "points": 30, "average_points": 3.0,
+            "market_value": 4_000_000, "buyout_clause": clausula, "is_shielded": escudo,
+            "clause_locked_until": None if horas is None else AHORA + timedelta(hours=horas),
+        }
+    return pd.DataFrame([
+        fila("a", 30), fila("b", 2), fila("c", None), fila("d", -1),
+        fila("e", 5, escudo=True), fila("f", 200),
+    ])
+
+
+def test_proximas_solo_bloqueadas_sin_escudo_y_por_hora():
+    out = proximas_a_abrirse(plantilla_con_bloqueos(), AHORA)
+    # c (sin bloqueo) y d (ya abierta) no están bloqueadas; e tiene escudo.
+    assert list(out["player_id"]) == ["b", "a", "f"]
+
+
+def test_proximas_dentro_de_la_ventana():
+    out = proximas_a_abrirse(plantilla_con_bloqueos(), AHORA, horas=24)
+    assert list(out["player_id"]) == ["b"]
+
+
+def test_proximas_acepta_fechas_en_texto_con_zona():
+    df = plantilla_con_bloqueos()
+    df["clause_locked_until"] = [
+        None if v is None else v.isoformat() for v in df["clause_locked_until"]
+    ]
+    assert list(proximas_a_abrirse(df, AHORA, horas=48)["player_id"]) == ["b", "a"]
+
+
+def test_criterio_apertura_ordena_por_hora():
+    df = enriquecer_clausulas(proximas_a_abrirse(plantilla_con_bloqueos(), AHORA), pd.DataFrame())
+    out = ranking_clausulas(df, "apertura", solo_juegan=False)
+    assert list(out["player_id"]) == ["b", "a", "f"]
+    assert "apertura" in TODOS_CRITERIOS and "apertura" not in CRITERIOS

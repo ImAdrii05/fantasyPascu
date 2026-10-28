@@ -18,8 +18,8 @@ La usa en dos situaciones distintas y ambas importan por igual:
 - **Móvil, durante el mercado**: consultas rápidas mientras decide una puja.
 - **Escritorio, sentado**: análisis con calma sobre tablas densas.
 
-Hoy corre en local (`localhost:8501`). Dónde alojarla para usarla fuera de casa
-es una decisión pendiente del usuario.
+Corre en local (`localhost:8501`) y, para el móvil, en Streamlit Community Cloud
+como app privada con contraseña (ver README, "Acceso desde el móvil").
 
 Interfaz en español.
 
@@ -47,7 +47,9 @@ dato. El cálculo sigue en `analytics/money.py`, sin usarse.
 ## Operating Context
 
 - Un cron diario (GitHub Actions, 04:00 UTC) recolecta y guarda en Supabase.
-  La app solo lee; nunca escribe datos de juego.
+  La app lee de Supabase. La única escritura de juego es **pagar una cláusula**,
+  siempre a petición del usuario, con comprobación en vivo y confirmación: nada
+  automático ni programado.
 - El mercado del juego rota cada día, así que las decisiones son diarias y
   tienen hora límite. El usuario consulta justo antes de pujar.
 - Las jornadas marcan el ritmo: puntos y minutos solo cambian tras cada partido.

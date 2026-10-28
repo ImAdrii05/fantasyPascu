@@ -6,8 +6,10 @@ porque ésta no admite fotos, chips de demarcación ni cifras coloreadas, que es
 justo lo que hace legible un listado de 800 jugadores.
 """
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from html import escape
+import hmac
 import json
 from urllib.parse import urlencode
 import textwrap
@@ -20,7 +22,15 @@ from supabase import create_client
 
 from fantasy import config
 from fantasy.store.supabase import fetch_all
-from fantasy.analytics.clauses import CRITERIOS, MIN_PCT_MINUTOS, VENTANA_FORMA, enriquecer_clausulas, ranking_clausulas
+from fantasy.analytics.clauses import (
+    CRITERIOS,
+    MIN_PCT_MINUTOS,
+    TODOS_CRITERIOS,
+    VENTANA_FORMA,
+    enriquecer_clausulas,
+    proximas_a_abrirse,
+    ranking_clausulas,
+)
 from fantasy.dashboard import ui
 
 # Configuración de página
@@ -253,14 +263,7 @@ def dialogo_clausulazo(league_id: str, fila: dict) -> None:
     hechos = [("Dueño", dueno), ("Cláusula", format_money(importe))]
     if saldo is not None:
         hechos += [("Tu saldo", format_money(saldo)), ("Te quedarían", format_money(saldo - importe))]
-    render_html(
-        "".join(
-            f'<div style="display:flex;justify-content:space-between;padding:6px 0;'
-            f'border-bottom:1px solid var(--line)"><span class="muted">{escape(k)}</span>'
-            f"<strong>{escape(v)}</strong></div>"
-            for k, v in hechos
-        )
-    )
+    render_html(ui.fact_list(hechos))
 
     if saldo is not None and saldo < importe:
         st.error(f"No te llega: te faltan {format_money(importe - saldo)}.")
@@ -315,6 +318,36 @@ def formatear_cuenta_atras(cuando, ahora=None) -> str:
         return f'<span class="muted">{horas}h {minutos}m</span>'
     # Menos de una hora: es el momento de estar mirando, asi que se destaca.
     return ui.tag(f"{minutos}m", "warn")
+
+
+# Las cláusulas se abren a una hora exacta y el usuario juega desde España: la hora
+# se enseña en la suya. Sin base de zonas (Windows sin `tzdata`) se cae a UTC.
+try:
+    HORA_ESPANA = ZoneInfo("Europe/Madrid")
+except ZoneInfoNotFoundError:
+    HORA_ESPANA = timezone.utc
+DIAS_SEMANA = ("lun", "mar", "mié", "jue", "vie", "sáb", "dom")
+
+
+def hora_apertura(cuando, ahora=None) -> str:
+    """Hora de apertura legible en horario de España: "hoy 19:28", "mañana 07:10", "jue 30 19:28"."""
+    local = cuando.astimezone(HORA_ESPANA)
+    hoy = (ahora or datetime.now(timezone.utc)).astimezone(HORA_ESPANA).date()
+    if local.date() == hoy:
+        dia = "hoy"
+    elif local.date() == hoy + timedelta(days=1):
+        dia = "mañana"
+    else:
+        dia = f"{DIAS_SEMANA[local.weekday()]} {local.day}"
+    return f"{dia} {local:%H:%M}"
+
+
+def celda_apertura(cuando, ahora) -> str:
+    """Cuenta atrás y, debajo, la hora exacta: un clausulazo se juega a esa hora."""
+    cuenta = formatear_cuenta_atras(cuando, ahora)
+    if cuando is None or pd.isna(cuando) or cuando <= ahora:
+        return cuenta
+    return f'<span class="ap">{cuenta}<br><span class="ap-h">{hora_apertura(cuando, ahora)}</span></span>'
 
 
 @st.cache_data(ttl=CACHE_TTL)
@@ -614,9 +647,31 @@ def format_money(val: int | float | None, with_sign: bool = False) -> str:
     return formatted
 
 
+def acceso_permitido() -> bool:
+    """Pide la contraseña si `APP_PASSWORD` está definida. Sin ella, acceso libre (local).
+
+    La comparación es de tiempo constante para no dar pistas de cuánto acierta.
+    Vale para toda la sesión del navegador: al recargar se vuelve a pedir.
+    """
+    if not config.APP_PASSWORD or st.session_state.get("acceso_ok"):
+        return True
+    render_html(ui.section("LaLiga Fantasy", "lock", "Panel privado. Introduce la contraseña para entrar."))
+    with st.form("acceso"):
+        clave = st.text_input("Contraseña", type="password")
+        if st.form_submit_button("Entrar", type="primary"):
+            if hmac.compare_digest(clave.encode("utf-8"), config.APP_PASSWORD.encode("utf-8")):
+                st.session_state["acceso_ok"] = True
+                st.rerun()
+            st.error("Contraseña incorrecta.")
+    return False
+
+
 def main():
     # Inyectar estilos personalizados
     render_html(ui.CSS)
+
+    if not acceso_permitido():
+        st.stop()
 
     # Validar que Supabase esté configurado
     if not config.SUPABASE_URL or not config.SUPABASE_SERVICE_KEY:
@@ -914,7 +969,7 @@ def main():
         df_page = df_display.head(LIMITE_FILAS)
 
         columns = [
-            {"label": "#", "align": "right", "cls": "rk"},
+            {"label": "#", "align": "right", "cls": "rk hide-xs"},
             {"label": "Jugador", "align": "left", "sort": "jugador"},
             {"label": "Valor", "align": "right", "cls": "num", "sort": "valor"},
         ]
@@ -1254,12 +1309,12 @@ def main():
             df_min_display["rank"] = df_min_display.index + 1
 
             min_columns = [
-                {"label": "#", "align": "right", "cls": "rk"},
+                {"label": "#", "align": "right", "cls": "rk hide-xs"},
                 {"label": "Jugador", "align": "left"},
                 {"label": "Valor", "align": "right", "cls": "num"},
                 {"label": "Minutos", "align": "right", "cls": "num hide-sm"},
                 {"label": "% jugado", "align": "right"},
-                {"label": "Pts", "align": "right", "cls": "num"},
+                {"label": "Pts", "align": "right", "cls": "num hide-xs"},
                 {"label": "Goles", "align": "right", "cls": "num hide-sm"},
                 {"label": "Pts / M€", "align": "right", "cls": "num"},
             ]
@@ -1384,27 +1439,57 @@ def main():
 
         vista = st.radio(
             "Vista",
-            ["Cláusulas abiertas", "Por mánager"],
+            ["Cláusulas abiertas", "Próximas a abrirse", "Por mánager"],
             horizontal=True,
             key="vista_plantillas",
             label_visibility="collapsed",
         )
+        proximas = vista == "Próximas a abrirse"
 
-        if vista == "Cláusulas abiertas":
-            df_abiertas = enriquecer_clausulas(df_squad[df_squad["abierta"] & ~df_squad["es_mio"]], df_gw)
+        def sobrecoste_txt(sobre) -> str:
+            if pd.notnull(sobre) and sobre > 0:
+                return f'<span class="v-down">+{format_money(sobre)}</span>'
+            if pd.notnull(sobre):
+                return f'<span class="v-up">{format_money(sobre)}</span>'
+            return MUTED_DASH
+
+        def numero(valor, decimales: int = 0) -> str:
+            if valor is None or pd.isna(valor):
+                return MUTED_DASH
+            return f"{valor:.{decimales}f}".replace(".", ",")
+
+        if vista in ("Cláusulas abiertas", "Próximas a abrirse"):
+            # Tus propios jugadores no se pueden clausular: fuera de las dos vistas.
+            ajenas = df_squad[~df_squad["es_mio"]]
+            if proximas:
+                ventanas = {"6 h": 6, "24 h": 24, "48 h": 48, "7 días": 168, "Todas": None}
+                ventana = st.select_slider(
+                    "Se abren en las próximas",
+                    options=list(ventanas),
+                    value="48 h",
+                    key="ventana_proximas",
+                )
+                base = proximas_a_abrirse(ajenas, ahora, ventanas[ventana])
+                criterios = list(TODOS_CRITERIOS)
+            else:
+                base = ajenas[ajenas["abierta"]]
+                criterios = list(CRITERIOS)
+            df_base = enriquecer_clausulas(base, df_gw)
+
             c_crit, c_pres = st.columns([1, 1.4])
             with c_crit:
                 criterio = st.selectbox(
                     "Ordenar por",
-                    list(CRITERIOS),
-                    format_func=lambda k: CRITERIOS[k].etiqueta,
-                    key="criterio_clausulas",
+                    criterios,
+                    format_func=lambda k: TODOS_CRITERIOS[k].etiqueta,
+                    # Clave distinta por vista: cada una recuerda su orden.
+                    key="criterio_proximas" if proximas else "criterio_clausulas",
                     help="El rendimiento por millón se calcula sobre la cláusula, que es lo que pagarías.",
                 )
             with c_pres:
                 # Escalones en millones: un deslizador de euros a secas no deja
                 # elegir con precisión entre 2 M y 3 M cuando el máximo es 150 M.
-                tope = df_abiertas["buyout_clause"].max()
+                tope = df_base["buyout_clause"].max()
                 escalones = [m * 1_000_000 for m in (1, 2, 3, 5, 7, 10, 15, 20, 30, 40, 50, 75, 100, 150, 200)]
                 escalones = [e for e in escalones if pd.isna(tope) or e < tope] + [None]
                 presupuesto = None
@@ -1424,11 +1509,16 @@ def main():
                 help="Sin este filtro, un suplente de 0,3 M con dos apariciones encabeza los "
                 "puntos por millón aunque no juegue nunca.",
             )
-            df_v = ranking_clausulas(df_abiertas, criterio, solo_juegan=solo_juegan, clausula_max=presupuesto)
-            nota = (
-                f"{len(df_v)} de {len(df_abiertas)} cláusulas abiertas, ordenadas por "
-                f"{CRITERIOS[criterio].explicacion}."
-            )
+            df_v = ranking_clausulas(df_base, criterio, solo_juegan=solo_juegan, clausula_max=presupuesto)
+            orden = TODOS_CRITERIOS[criterio].explicacion
+            if proximas:
+                cuando = "más adelante" if ventanas[ventana] is None else f"en las próximas {ventana}"
+                nota = (
+                    f"{len(df_v)} de {len(df_base)} cláusulas que se abren {cuando}, ordenadas por "
+                    f"{orden}. Los blindados no salen: el escudo no tiene hora de fin."
+                )
+            else:
+                nota = f"{len(df_v)} de {len(df_base)} cláusulas abiertas, ordenadas por {orden}."
         else:
             managers = sorted(df_squad["manager_name"].dropna().unique())
             quien = st.selectbox("Mánager", managers, key="manager_plantilla")
@@ -1443,22 +1533,11 @@ def main():
 
         render_html(f'<p class="sc-n">{nota}</p>')
 
-        def sobrecoste_txt(sobre) -> str:
-            if pd.notnull(sobre) and sobre > 0:
-                return f'<span class="v-down">+{format_money(sobre)}</span>'
-            if pd.notnull(sobre):
-                return f'<span class="v-up">{format_money(sobre)}</span>'
-            return MUTED_DASH
-
-        def numero(valor, decimales: int = 0) -> str:
-            if valor is None or pd.isna(valor):
-                return MUTED_DASH
-            return f"{valor:.{decimales}f}".replace(".", ",")
-
-        if vista == "Cláusulas abiertas":
-            # Todas están abiertas: en vez de la hora de apertura, lo que sirve para
-            # decidir es cuánto rinde cada una por lo que cuesta. El ratio que se
-            # enseña es el del criterio elegido, para que la cifra explique el orden.
+        if vista != "Por mánager":
+            # Lo que sirve para decidir es cuánto rinde cada una por lo que cuesta. El
+            # ratio que se enseña es el del criterio elegido, para que la cifra
+            # explique el orden. En móvil quedan jugador, cláusula, ratio y, en las
+            # próximas, la hora: el mánager pasa a la línea del equipo.
             ratio_col, ratio_label = (
                 ("forma_por_millon", "Forma/M€") if criterio == "forma_millon" else ("pts_por_millon", "Pts/M€")
             )
@@ -1467,18 +1546,22 @@ def main():
                 {"label": "Mánager", "align": "left", "cls": "hide-sm"},
                 {"label": "Cláusula", "align": "right", "cls": "num"},
                 {"label": "Sobrecoste", "align": "right", "cls": "num hide-sm"},
-                {"label": "Puntos", "align": "right", "cls": "num"},
-                {"label": f"Forma {VENTANA_FORMA}J", "align": "right", "cls": "num"},
-                {"label": ratio_label, "align": "right", "cls": "num"},
+                {"label": "Puntos", "align": "right", "cls": "num hide-xs"},
+                {"label": f"Forma {VENTANA_FORMA}J", "align": "right", "cls": "num hide-xs" if proximas else "num"},
+                # En las próximas, en móvil manda la hora: el ratio cede su sitio.
+                {"label": ratio_label, "align": "right", "cls": "num hide-xs" if proximas else "num"},
                 {"label": f"Minutos {VENTANA_FORMA}J", "align": "left", "cls": "hide-sm"},
             ]
-            filas = [
-                [
+            if proximas:
+                columnas.append({"label": "Se abre", "align": "right"})
+            filas = []
+            for _, r in df_v.head(200).iterrows():
+                fila = [
                     ui.player_cell(
                         r["player_name"], r.get("club_name"), r.get("position"),
-                        r.get("image_url") or NO_PLAYER_IMG,
+                        r.get("image_url") or NO_PLAYER_IMG, note=r.get("manager_name"),
                     ),
-                    str(r.get("manager_name") or ""),
+                    escape(str(r.get("manager_name") or "")),
                     format_money(r.get("buyout_clause")),
                     sobrecoste_txt(r.get("sobrecoste")),
                     numero(r.get("points")),
@@ -1486,15 +1569,16 @@ def main():
                     numero(r.get(ratio_col), 1),
                     ui.bar_cell(None if pd.isna(r.get("pct_minutos")) else r.get("pct_minutos")),
                 ]
-                for _, r in df_v.head(200).iterrows()
-            ]
+                if proximas:
+                    fila.append(celda_apertura(r.get("clause_locked_until"), ahora))
+                filas.append(fila)
         else:
             columnas = [
                 {"label": "Jugador", "align": "left"},
                 {"label": "Mánager", "align": "left", "cls": "hide-sm"},
-                {"label": "Valor", "align": "right", "cls": "num"},
+                {"label": "Valor", "align": "right", "cls": "num hide-xs"},
                 {"label": "Cláusula", "align": "right", "cls": "num"},
-                {"label": "Sobrecoste", "align": "right", "cls": "num"},
+                {"label": "Sobrecoste", "align": "right", "cls": "num hide-xs"},
                 {"label": "Se abre", "align": "right"},
             ]
             filas = [
@@ -1503,13 +1587,13 @@ def main():
                         r["player_name"], r.get("club_name"), r.get("position"),
                         r.get("image_url") or NO_PLAYER_IMG,
                     ),
-                    str(r.get("manager_name") or ""),
+                    escape(str(r.get("manager_name") or "")),
                     format_money(r.get("market_value")),
                     format_money(r.get("buyout_clause")),
                     sobrecoste_txt(r.get("sobrecoste")),
                     ui.tag("Escudo", "neutral")
                     if bool(r.get("is_shielded"))
-                    else formatear_cuenta_atras(r.get("clause_locked_until"), ahora),
+                    else celda_apertura(r.get("clause_locked_until"), ahora),
                 ]
                 for _, r in df_v.head(200).iterrows()
             ]

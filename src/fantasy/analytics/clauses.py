@@ -10,6 +10,7 @@ regularidad (minutos en las últimas jornadas) activo por defecto.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 
 import pandas as pd
 
@@ -48,6 +49,27 @@ CRITERIOS: dict[str, Criterio] = {
     ),
     "barata": Criterio("Cláusula más barata", "buyout_clause", True, "importe de la cláusula"),
 }
+
+
+# Solo tiene sentido para las que aún no se han abierto, así que va aparte.
+APERTURA = Criterio("Se abre antes", "clause_locked_until", True, "hora de apertura, de la más cercana a la más lejana")
+TODOS_CRITERIOS: dict[str, Criterio] = {"apertura": APERTURA, **CRITERIOS}
+
+
+def proximas_a_abrirse(df: pd.DataFrame, ahora: datetime, horas: float | None = None) -> pd.DataFrame:
+    """Cláusulas todavía bloqueadas que se abren dentro de `horas` (o todas si es None).
+
+    Los blindados quedan fuera: el escudo bloquea aunque pase la hora de apertura,
+    así que esa hora no dice cuándo se podrá pagar.
+    """
+    apertura = pd.to_datetime(df["clause_locked_until"], utc=True, errors="coerce")
+    blindado = df["is_shielded"].fillna(False).astype(bool) if "is_shielded" in df else False
+    mascara = apertura.notna() & (apertura > ahora) & ~blindado
+    if horas is not None:
+        mascara &= apertura <= ahora + pd.Timedelta(hours=horas)
+    out = df[mascara].copy()
+    out["clause_locked_until"] = apertura[mascara]
+    return out.sort_values("clause_locked_until")
 
 
 def enriquecer_clausulas(df_squad: pd.DataFrame, df_gw: pd.DataFrame, ventana: int = VENTANA_FORMA) -> pd.DataFrame:
@@ -103,7 +125,7 @@ def ranking_clausulas(
     hay datos de minutos, no filtra: dejar la tabla vacía por falta de datos sería
     peor que no filtrar.
     """
-    c = CRITERIOS[criterio]
+    c = TODOS_CRITERIOS[criterio]
     out = df
     if solo_juegan and out["pct_minutos"].notna().any():
         out = out[out["pct_minutos"] >= MIN_PCT_MINUTOS]

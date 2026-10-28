@@ -123,6 +123,8 @@ _ICON_PATHS = {
     '<circle cx="12" cy="12" r="2.5"/><path d="M3 9h3v6H3M21 9h-3v6h3"/>',
     "alert": '<path d="M12 4 2.5 20h19L12 4Z"/><path d="M12 10v4M12 17.2v.1"/>',
     "dot": '<circle cx="12" cy="12" r="4.5"/>',
+    "lock": '<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'
+    '<path d="M12 14.5v2.5"/>',
     "caret_down": '<path d="m7 10 5 5 5-5"/>',
     "caret_up": '<path d="m7 14 5-5 5 5"/>',
 }
@@ -152,16 +154,24 @@ def pos_chip(position: str | None) -> str:
     return f'<span class="chip" style="background:{POSITION_COLORS[key]}">{POSITION_ABBR[key]}</span>'
 
 
-def player_cell(name: str, team: str | None, position: str | None, img_url: str | None) -> str:
-    """Celda de jugador: foto, chip de demarcación, nombre y equipo."""
+def player_cell(
+    name: str, team: str | None, position: str | None, img_url: str | None, note: str | None = None
+) -> str:
+    """Celda de jugador: foto, chip de demarcación, nombre y equipo.
+
+    `note` se añade tras el equipo solo en pantallas estrechas: es para el dato de
+    una columna que allí se oculta (el mánager, en las tablas de cláusulas), que
+    así no se pierde en el móvil.
+    """
     img = escape(img_url or "", quote=True)
     photo = f'<img class="pc-img" src="{img}" alt="" loading="lazy">' if img else '<span class="pc-img pc-img-empty"></span>'
+    extra = f'<span class="pc-note"> · {escape(str(note))}</span>' if note else ""
     return (
         '<div class="pc">'
         f'<div class="pc-ph">{photo}{pos_chip(position)}</div>'
         '<div class="pc-tx">'
         f'<span class="pc-name">{escape(str(name))}</span>'
-        f'<span class="pc-team">{escape(str(team or "Sin equipo"))}</span>'
+        f'<span class="pc-team">{escape(str(team or "Sin equipo"))}{extra}</span>'
         "</div></div>"
     )
 
@@ -297,6 +307,15 @@ def player_header(name: str, team: str | None, position: str | None, img_url: st
         + (f'<div class="ph-x">{extra}</div>' if extra else "")
         + "</div>"
     )
+
+
+def fact_list(items: list[tuple[str, str]]) -> str:
+    """Pares etiqueta/valor en filas con filete, para resúmenes cortos (p. ej. un pago)."""
+    rows = "".join(
+        f'<div class="fl-i"><span class="fl-l">{escape(k)}</span><span class="fl-v">{escape(v)}</span></div>'
+        for k, v in items
+    )
+    return f'<div class="fl">{rows}</div>'
 
 
 def section(title: str, icon_name: str = "", note: str = "") -> str:
@@ -439,14 +458,20 @@ header[data-testid="stHeader"] {
   pointer-events: auto !important;
   position: fixed !important; top: 22px; left: 32px; z-index: 80;
   width: 32px; height: 32px; border-radius: 5px;
-  background: rgba(255,255,255,.14) !important;
+  /* Tinta con filete claro, no blanco translúcido: el botón es fijo y al hacer
+     scroll deja el masthead; sobre el papel, el blanco se volvía invisible. */
+  background: var(--ink) !important;
+  box-shadow: 0 0 0 1px rgba(255,255,255,.22);
   color: #FFFFFF !important;
   transition: background-color .14s cubic-bezier(.16,1,.3,1);
 }
-[data-testid="stExpandSidebarButton"]:hover { background: rgba(255,255,255,.26) !important; }
+[data-testid="stExpandSidebarButton"]:hover { background: #2A2E31 !important; }
 [data-testid="stExpandSidebarButton"] span { color: #FFFFFF !important; }
-/* Con el menú plegado el botón cae sobre el masthead, así que se le hace hueco. */
-[data-testid="stSidebar"][aria-expanded="false"] ~ div .mh { padding-left: 76px; }
+/* Con el menú plegado el botón cae sobre el masthead, así que se le hace hueco.
+   La segunda regla es para Streamlit reciente, donde la barra lateral ya no lleva
+   `aria-expanded`: el botón de reabrir solo existe con el menú plegado. */
+[data-testid="stSidebar"][aria-expanded="false"] ~ div .mh,
+.stApp:has([data-testid="stExpandSidebarButton"]) .mh { padding-left: 76px; }
 
 .ic { flex: none; vertical-align: -0.18em; }
 
@@ -698,10 +723,27 @@ header[data-testid="stHeader"] {
 [data-testid="stSidebar"] { background: var(--paper); border-right: 1px solid var(--line); }
 [data-testid="stSidebar"] .block-container { padding-top: 18px !important; }
 
-[data-baseweb="tab-list"] {
+/* Cada regla lleva dos selectores: el de Streamlit hasta ~1.4x (baseweb) y el de
+   las versiones recientes (react-aria, `stTab`), que es el que se instala en la nube. */
+[data-baseweb="tab-list"],
+[data-testid="stTabs"] [role="tablist"] {
   gap: 2px !important; background: var(--ink); padding: 4px !important;
   border-radius: var(--r); margin-bottom: 16px;
 }
+[data-testid="stTab"] {
+  background: transparent !important; color: rgba(255,255,255,.62) !important;
+  border-radius: 4px !important; padding: 7px 15px !important; height: auto !important;
+  transition: color .16s cubic-bezier(.16,1,.3,1), background-color .16s cubic-bezier(.16,1,.3,1);
+}
+[data-testid="stTab"] p {
+  color: inherit !important; margin: 0 !important;
+  font-family: "Barlow Condensed", sans-serif !important;
+  font-size: 14.5px !important; font-weight: 600 !important;
+  letter-spacing: 0.07em; text-transform: uppercase;
+}
+[data-testid="stTab"]:hover { color: #fff !important; }
+[data-testid="stTab"][aria-selected="true"] { background: var(--paper) !important; color: var(--ink) !important; }
+[data-testid="stTabs"] .react-aria-SelectionIndicator { display: none !important; }
 [data-baseweb="tab-list"] button[data-baseweb="tab"] {
   background: transparent !important; color: rgba(255,255,255,.62) !important;
   border-radius: 4px !important; padding: 7px 15px !important; height: auto !important;
@@ -740,8 +782,26 @@ header[data-testid="stHeader"] {
    El corte está en 1120px y no en el ancho de móvil a propósito: con la barra
    lateral abierta, una ventana de escritorio deja al contenido bastante menos
    espacio del que aparenta, y la tabla se cortaba por la derecha. */
+/* Nota tras el equipo (ver `player_cell`): solo aparece donde su columna se oculta. */
+.pc-note { display: none; }
+
+/* Apertura de una cláusula: cuenta atrás y, debajo, la hora exacta. Sin cortes:
+   "hoy" y "17:15" en líneas distintas no se leen como una hora. */
+.ap { white-space: nowrap; }
+.ap-h { font-size: 12.5px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+
+/* Lista de hechos (resumen de un pago) */
+.fl { margin: 10px 0 4px; }
+.fl-i {
+  display: flex; justify-content: space-between; gap: 12px;
+  padding: 7px 0; border-bottom: 1px solid var(--line);
+}
+.fl-l { color: var(--text-2); }
+.fl-v { font-weight: 700; font-variant-numeric: tabular-nums; }
+
 @media (max-width: 1120px) {
   .hide-sm { display: none !important; }
+  .pc-note { display: inline; }
   .dl { min-width: 104px; }
 }
 
@@ -757,6 +817,24 @@ header[data-testid="stHeader"] {
   .dl-p { display: none; }
   .sr-i { flex-basis: 50%; }
   .pd-v { display: none; }
+  /* El botón del menú va fijo arriba a la izquierda: aquí el masthead empieza más
+     cerca del borde, así que se recoloca dentro de él y se le deja su hueco. */
+  [data-testid="stExpandSidebarButton"] { top: 19px !important; left: 22px !important; }
+  .mh, .stApp:has([data-testid="stExpandSidebarButton"]) .mh { padding-left: 54px; }
+  /* Las cinco pestañas tienen que caber a lo ancho sin desplazarse. */
+  [data-baseweb="tab-list"] button[data-baseweb="tab"], [data-testid="stTab"] { padding: 6px 5px !important; }
+  [data-baseweb="tab-list"] button[data-baseweb="tab"], [data-testid="stTab"] p {
+    font-size: 12px !important; letter-spacing: 0.03em;
+  }
+  /* La barra de herramientas de los gráficos tapa la leyenda y en táctil no se usa. */
+  .modebar-container { display: none !important; }
+}
+
+/* Móvil estrecho: solo las columnas que deciden. Las demás siguen en escritorio. */
+@media (max-width: 600px) {
+  .hide-xs { display: none !important; }
+  /* La barra de minutos no necesita 108px para leerse: así cabe una columna más. */
+  .pb { min-width: 62px; padding: 3px 6px; }
 }
 </style>
 """

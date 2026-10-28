@@ -52,6 +52,10 @@ def configured_league_ids() -> list[str]:
     return [part.strip() for part in FANTASY_LEAGUE_ID.split(",") if part.strip()]
 
 
+# Contraseña del dashboard. Vacía (lo normal en local) = sin contraseña. En la nube
+# conviene ponerla: el panel puede pagar cláusulas con tu cuenta.
+APP_PASSWORD: str = os.getenv("APP_PASSWORD", "")
+
 # Constantes de la API de LaLiga Fantasy
 API_BASE_URL: str = os.getenv("API_BASE_URL", "https://fantasy-api.llt-services.com/api")
 COMPETITION_ID: str = os.getenv("COMPETITION_ID", "1")

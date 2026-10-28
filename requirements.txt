@@ -1,0 +1,9 @@
+# Dependencias para Streamlit Community Cloud (usa este fichero, no pyproject.toml).
+# Deben coincidir con [project] dependencies de pyproject.toml: lo comprueba
+# tests/test_requirements.py.
+requests>=2.31.0
+pandas>=2.2.0
+python-dotenv>=1.0.0
+supabase>=2.3.0
+streamlit>=1.37.0
+plotly>=5.18.0

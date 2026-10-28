@@ -112,6 +112,49 @@ pytest tests/test_auth.py
 
 ---
 
+## 📱 Acceso desde el móvil (Streamlit Community Cloud)
+
+El dashboard se puede alojar gratis en Streamlit Community Cloud y abrir desde el
+móvil con una URL `https://<nombre>.streamlit.app`. El repo ya está preparado:
+`streamlit_app.py` (punto de entrada en la raíz) y `requirements.txt`.
+
+> **⚠️ El panel puede pagar cláusulas con tu cuenta.** Tiene que quedar **privado**
+> y con **contraseña**. Las dos cosas, no una.
+
+1. Entra en [share.streamlit.io](https://share.streamlit.io) con tu cuenta de GitHub
+   y autoriza el acceso a repos privados.
+2. **Create app** → desde GitHub:
+   - Repository: `ImAdrii05/fantasyPascu`
+   - Branch: `main`
+   - Main file path: `streamlit_app.py`
+   - App URL: el nombre que quieras (6 a 63 caracteres).
+3. **Advanced settings**:
+   - Python: **3.13** si aparece; si no, 3.12 (está probado con las dos).
+   - Secrets (formato TOML):
+     ```toml
+     SUPABASE_URL = "https://tu-proyecto.supabase.co"
+     SUPABASE_SERVICE_KEY = "tu-service-role-key"
+     APP_PASSWORD = "una-contraseña-larga"
+     ```
+4. **Deploy.** Al venir de un repo privado, la app ya nace privada. En
+   **Settings → Sharing** comprueba que está en *Only specific people can view this
+   app* y añade tu email. Para entrar, Streamlit te pide iniciar sesión con Google
+   o con un enlace que te manda por email; después, la contraseña del panel.
+5. En el móvil: abre la URL y, desde el menú del navegador, **Añadir a pantalla de
+   inicio** para tenerla como una app.
+
+Cosas a saber:
+
+- **No hace falta subir el token.** La app lo lee de la tabla `auth_state` de
+  Supabase, igual que el cron. Si caduca, `python scripts/login.py` en tu PC lo
+  renueva para los dos.
+- **Se duerme tras 12 horas sin visitas.** Al abrirla sale un botón para
+  despertarla; tarda unos segundos.
+- Solo se permite **una app privada** por cuenta de Streamlit.
+- Cambiar la versión de Python después obliga a borrar la app y volver a crearla.
+
+---
+
 ## 📂 Arquitectura
 
 ```
@@ -194,4 +237,5 @@ A partir de ahí corre solo cada día a las 04:00 UTC.
   arregla ejecutando de nuevo `python scripts/login.py` en local, que deja el token
   nuevo en `auth_state`.
 - Si LaLiga cambia el backend, lo que se rompe es `auth/` o `api/endpoints.py`.
-  Nada más: `analytics` y `dashboard` solo leen de Postgres.
+  `analytics` y casi todo el `dashboard` solo leen de Postgres; la pestaña de
+  Plantillas sí pide plantillas y cláusulas a la API en vivo, y paga cláusulas.

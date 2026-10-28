@@ -136,7 +136,19 @@ fábrica, que aquí significaría "ha bajado de precio".
   escritorio deja bastante menos espacio del que aparenta.
 - **760px** — tabla más compacta, el porcentaje de la variación se oculta, las
   cifras pasan a dos por fila y la barra lateral se pliega sola
-  (`initial_sidebar_state="auto"`).
+  (`initial_sidebar_state="auto"`). Las cinco pestañas se estrechan para caber
+  sin desplazarse, el botón del menú se recoloca dentro del masthead y la barra
+  de herramientas de los gráficos desaparece (en táctil tapaba la leyenda).
+- **600px** — móvil estrecho: `.hide-xs` deja en cada tabla solo las columnas
+  que deciden (Mercado: jugador, valor, variación y puntos; cláusulas: jugador,
+  cláusula, ratio u hora de apertura). Cuando la columna del mánager se oculta,
+  pasa a la línea del equipo (`player_cell(note=...)`), porque en una cláusula
+  es justo lo que importa.
+
+Los selectores de pestañas y del botón del menú van por partida doble: los de
+Streamlit hasta ~1.4x (`data-baseweb`) y los de las versiones recientes
+(`stTab`, react-aria), que es lo que instala Streamlit Cloud. Sin los segundos,
+la barra de pestañas en tinta y el hueco del botón no se aplicaban.
 
 ## Reglas que no se rompen
 
