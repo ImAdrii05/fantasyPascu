@@ -6,7 +6,7 @@ import responses
 import pytest
 
 from fantasy.api import FantasyApiClient, FantasyApiError
-from fantasy.api.models import Team, Player, League, LeagueStanding, LeagueMovement, PlayerGameweekStat, SquadPlayer
+from fantasy.api.models import Team, Player, League, LeagueStanding, LeagueMovement, PlayerGameweekStat, SquadPlayer, MarketItem
 from fantasy.collect.players import extract_gameweek_stats
 from fantasy.collect.player_details import parse_player_detail
 from fantasy.auth.store import BaseTokenStore, set_token_store
@@ -368,3 +368,55 @@ def test_get_league_team_tolera_respuesta_rara():
     responses.add(responses.GET, url, json=[])
     jugadores, _ = client.get_league_team("1", "2")
     assert jugadores == []
+
+
+def test_market_item_distingue_liga_de_managers():
+    """`owner_team_id` es lo que separa un agente libre de lo que vende otro mánager.
+
+    Payloads recortados de /league/{id}/market: `marketPlayerLeague` no trae vendedor;
+    `marketPlayerTeam` lo trae en `sellerTeam.id`, no en `teamId` ni en `team.id`.
+    """
+    de_la_liga = {
+        "id": "519703215",
+        "discr": "marketPlayerLeague",
+        "salePrice": 1029843,
+        "playerMaster": {"id": "3283", "nickname": "Javier Aguirre"},
+        "expirationDate": "2026-10-29T10:12:00+01:00",
+    }
+    de_un_manager = {
+        "id": "519800000",
+        "discr": "marketPlayerTeam",
+        "salePrice": 172609948,
+        "playerMaster": {"id": "1100", "nickname": "Mbappé"},
+        "sellerTeam": {"id": "38164070", "managerId": 6518230},
+        "expirationDate": "2026-10-29T10:12:00+01:00",
+    }
+
+    libre = MarketItem.from_api("018021020", de_la_liga)
+    assert libre.owner_team_id is None
+    assert libre.player_id == "3283"
+    assert libre.price == 1029843
+
+    vendido = MarketItem.from_api("018021020", de_un_manager)
+    assert vendido.owner_team_id == "38164070"
+
+
+def test_market_item_mantiene_las_claves_antiguas():
+    """`teamId` y `team.id` siguen valiendo: el arreglo añade `sellerTeam`, no lo sustituye."""
+    por_team_id = MarketItem.from_api("1", {"id": "1", "teamId": "777", "playerMaster": {"id": "9"}})
+    assert por_team_id.owner_team_id == "777"
+
+    por_team_obj = MarketItem.from_api("1", {"id": "2", "team": {"id": "888"}, "playerMaster": {"id": "9"}})
+    assert por_team_obj.owner_team_id == "888"
+
+    # sellerTeam manda cuando están los dos: es el vendedor real del escaparate.
+    ambos = MarketItem.from_api(
+        "1", {"id": "3", "teamId": "777", "sellerTeam": {"id": "999"}, "playerMaster": {"id": "9"}}
+    )
+    assert ambos.owner_team_id == "999"
+
+
+def test_market_item_lee_el_precio_de_venta():
+    """El mercado manda el precio en `salePrice`; sin ella quedaba a None en todo."""
+    item = MarketItem.from_api("1", {"id": "1", "salePrice": 1029843, "playerMaster": {"id": "9"}})
+    assert item.price == 1029843

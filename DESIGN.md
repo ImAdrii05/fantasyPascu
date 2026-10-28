@@ -160,7 +160,12 @@ la barra de pestañas en tinta y el hueco del botón no se aplicaban.
    usuario; el cálculo sigue en `analytics/money.py` por si vuelve.
 3. **Los minutos no son probabilidad de alineación**, y el panel lo dice donde
    se muestran.
-4. **Los entrenadores no entran en el ranking de minutos.** No pisan el campo,
+4. **"En venta en tu liga" son solo los agentes libres que subasta la liga.** El
+   endpoint de mercado mezcla dos cosas bajo `discr`: `marketPlayerLeague` (sin
+   vendedor) y `marketPlayerTeam` (el escaparate de otro mánager, con
+   `sellerTeam`). Mezclarlas hacía parecer fichable a precio de puja a un
+   jugador que en realidad tiene dueño. El filtro es `owner_team_id` vacío.
+5. **Los entrenadores no entran en el ranking de minutos.** No pisan el campo,
    así que salían con 0 minutos y 0 puntos por millón: un cero que parece un
    rendimiento pésimo cuando en realidad es una categoría que no aplica. En el
    mercado sí están, porque ahí sus puntos y su precio son reales.

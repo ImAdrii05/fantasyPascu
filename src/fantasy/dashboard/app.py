@@ -717,6 +717,11 @@ def main():
     if not df_league_market.empty:
         latest_mkt_date = df_league_market["snapshot_date"].max()
         df_cur_market = df_league_market[df_league_market["snapshot_date"] == latest_mkt_date].copy()
+        # Solo los que saca la liga. Un jugador sin vendedor (`owner_team_id` vacío) es
+        # un agente libre que subasta la liga; si lleva vendedor, lo ha puesto a la venta
+        # otro mánager, y eso no es el mercado de la liga sino su escaparate.
+        if "owner_team_id" in df_cur_market.columns:
+            df_cur_market = df_cur_market[df_cur_market["owner_team_id"].isna()]
         for _, r in df_cur_market.iterrows():
             pid = str(r["player_id"]) if pd.notnull(r.get("player_id")) else ""
             if pid:

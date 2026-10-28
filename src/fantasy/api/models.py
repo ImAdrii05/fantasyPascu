@@ -458,16 +458,34 @@ class MarketItem:
         elif data.get("playerId"):
             player_id = str(data["playerId"])
 
-        price = data.get("price") or data.get("marketValue") or data.get("buyoutClause")
+        # `salePrice` es el precio de la puja; va primero porque es la clave que usa
+        # de verdad el mercado. Sin ella el precio quedaba a NULL en todas las filas.
+        price = (
+            data.get("salePrice")
+            or data.get("price")
+            or data.get("marketValue")
+            or data.get("buyoutClause")
+        )
         if price is not None:
             try:
                 price = int(price)
             except (ValueError, TypeError):
                 price = None
 
+        # VERIFICADO contra el payload real: cuando un mánager pone a un jugador en
+        # venta, el vendedor llega en `sellerTeam.id`, no en `teamId` ni en `team.id`.
+        # Buscar solo esas dos claves dejaba `owner_team_id` siempre a None, y con él
+        # se pierde lo único que separa a los agentes libres que saca la liga
+        # (`marketPlayerLeague`, sin vendedor) de los que vende otro (`marketPlayerTeam`).
+        seller_obj = data.get("sellerTeam") or {}
         team_obj = data.get("team") or {}
         owner_team_id = (
-            str(data.get("teamId") or (team_obj.get("id") if isinstance(team_obj, dict) else "") or "")
+            str(
+                (seller_obj.get("id") if isinstance(seller_obj, dict) else "")
+                or data.get("teamId")
+                or (team_obj.get("id") if isinstance(team_obj, dict) else "")
+                or ""
+            )
             or None
         )
 
