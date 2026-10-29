@@ -46,7 +46,10 @@ dato. El cálculo sigue en `analytics/money.py`, sin usarse.
 
 ## Operating Context
 
-- Un cron diario (GitHub Actions, 04:00 UTC) recolecta y guarda en Supabase.
+- Un job diario (GitHub Actions) recolecta y guarda en Supabase justo después
+  de que LaLiga recalcule el mercado (hacia las 00:30 en España). Lo dispara
+  Supabase con pg_cron a las 00:40; los cron de GitHub son solo respaldo, porque
+  llegaban con horas de retraso.
   La app lee de Supabase. La única escritura de juego es **pagar una cláusula**,
   siempre a petición del usuario, con comprobación en vivo y confirmación: nada
   automático ni programado.

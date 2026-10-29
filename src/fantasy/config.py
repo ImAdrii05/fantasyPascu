@@ -1,7 +1,10 @@
 """Configuración general y carga de variables de entorno."""
 
+from datetime import date, datetime, timezone
 import os
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
 from dotenv import load_dotenv
 
 from fantasy.auth.errors import AuthConfigMissing
@@ -50,6 +53,35 @@ FANTASY_LEAGUE_ID: str = os.getenv("FANTASY_LEAGUE_ID", "")
 def configured_league_ids() -> list[str]:
     """IDs de liga fijados en FANTASY_LEAGUE_ID (vacío = detectar automáticamente)."""
     return [part.strip() for part in FANTASY_LEAGUE_ID.split(",") if part.strip()]
+
+
+# El día de juego es el de España. LaLiga recalcula el mercado de madrugada en hora
+# española (hacia las 00:30), y el job corre justo después: a las 00:40 de Madrid en
+# UTC todavía es el día anterior, así que con la fecha del servidor el snapshot se
+# guardaría con la fecha de ayer y pisaría al de ayer.
+ZONA_JUEGO = "Europe/Madrid"
+
+# Antes de esta hora (de Madrid), el job no guarda un mercado idéntico al de ayer:
+# casi seguro LaLiga aún no lo ha recalculado. Después la guarda igualmente, para
+# que un día sin cambios reales no se quede sin snapshot.
+HORA_LIMITE_ESPERA_MERCADO = 7
+
+# Recolectar aunque el día ya esté completo (lo pone el botón manual del workflow).
+FORZAR_SNAPSHOT: bool = os.getenv("FORZAR_SNAPSHOT", "").lower() in ("1", "true", "yes")
+
+
+def ahora_juego(ahora: datetime | None = None) -> datetime:
+    """La hora actual en España (o `ahora` convertida). Sin base de zonas, en UTC."""
+    ahora = ahora or datetime.now(timezone.utc)
+    try:
+        return ahora.astimezone(ZoneInfo(ZONA_JUEGO))
+    except ZoneInfoNotFoundError:
+        return ahora.astimezone(timezone.utc)
+
+
+def hoy_juego(ahora: datetime | None = None) -> date:
+    """La fecha del snapshot: el día en España, no el del servidor."""
+    return ahora_juego(ahora).date()
 
 
 # Contraseña del dashboard. Vacía (lo normal en local) = sin contraseña. En la nube

@@ -57,7 +57,7 @@ class SupabaseStore:
     def save_raw_snapshot(self, endpoint: str, payload: Any, snapshot_date: str | date | None = None) -> None:
         """Guarda el JSON crudo de la respuesta en la tabla raw_snapshots."""
         if snapshot_date is None:
-            snapshot_date = date.today().isoformat()
+            snapshot_date = config.hoy_juego().isoformat()
         elif isinstance(snapshot_date, date):
             snapshot_date = snapshot_date.isoformat()
 
@@ -73,6 +73,42 @@ class SupabaseStore:
         except Exception as e:
             logger.error(f"Error al guardar raw snapshot para '{endpoint}': {e}")
             raise
+
+    def has_raw_snapshot(self, endpoint: str, snapshot_date: str) -> bool:
+        """True si ya hay un JSON crudo de ese endpoint en esa fecha."""
+        res = (
+            self.client.table("raw_snapshots")
+            .select("id")
+            .eq("endpoint", endpoint)
+            .eq("snapshot_date", snapshot_date)
+            .limit(1)
+            .execute()
+        )
+        return bool(res.data)
+
+    def get_previous_market_values(self, before_date: str) -> dict[str, int | None]:
+        """Valor de mercado de cada jugador en el último snapshot ANTERIOR a `before_date`.
+
+        Vacío si no hay ningún día anterior (primer día de histórico).
+        """
+        ultimo = (
+            self.client.table("player_daily")
+            .select("snapshot_date")
+            .lt("snapshot_date", before_date)
+            .order("snapshot_date", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not ultimo.data:
+            return {}
+        fecha = ultimo.data[0]["snapshot_date"]
+        rows = fetch_all(
+            lambda: self.client.table("player_daily")
+            .select("player_id, market_value")
+            .eq("snapshot_date", fecha)
+            .order("player_id")
+        )
+        return {str(r["player_id"]): r.get("market_value") for r in rows}
 
     def upsert_teams(self, teams: list[Team]) -> int:
         """Realiza un upsert de los equipos maestros."""
@@ -140,7 +176,7 @@ class SupabaseStore:
         if not players:
             return 0
         if snapshot_date is None:
-            snapshot_date = date.today().isoformat()
+            snapshot_date = config.hoy_juego().isoformat()
         elif isinstance(snapshot_date, date):
             snapshot_date = snapshot_date.isoformat()
 
@@ -220,7 +256,7 @@ class SupabaseStore:
         if not standings:
             return 0
         if snapshot_date is None:
-            snapshot_date = date.today().isoformat()
+            snapshot_date = config.hoy_juego().isoformat()
         elif isinstance(snapshot_date, date):
             snapshot_date = snapshot_date.isoformat()
 
@@ -252,7 +288,7 @@ class SupabaseStore:
         if not market_items:
             return 0
         if snapshot_date is None:
-            snapshot_date = date.today().isoformat()
+            snapshot_date = config.hoy_juego().isoformat()
         elif isinstance(snapshot_date, date):
             snapshot_date = snapshot_date.isoformat()
 

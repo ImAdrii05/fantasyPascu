@@ -1,10 +1,17 @@
-"""Tests de la selección de ligas del job diario (sin red ni Supabase)."""
+"""Tests del job diario: selección de ligas y cuándo recolectar (sin red ni Supabase)."""
+
+from datetime import datetime, timezone
 
 import pytest
 
 from fantasy import config
-from fantasy.api.models import League
-from fantasy.collect.run_daily import resolve_leagues
+from fantasy.api.models import League, Player
+from fantasy.collect.run_daily import (
+    MARCA_DIA_COMPLETO,
+    decidir_recoleccion,
+    mercado_actualizado,
+    resolve_leagues,
+)
 
 
 class FakeClient:
@@ -77,3 +84,83 @@ def test_sin_tabla_leagues_no_impide_recolectar(monkeypatch):
 
     assert [lg.id for lg in leagues] == ["1", "2"]
     assert errors == []
+
+
+# --- Decisión de recolectar: día completo, mercado sin recalcular, hora límite ---
+
+
+class StoreDia:
+    def __init__(self, completos=(), anteriores=None):
+        self.completos = set(completos)
+        self.anteriores = anteriores or {}
+
+    def has_raw_snapshot(self, endpoint, fecha):
+        return (endpoint, fecha) in self.completos
+
+    def get_previous_market_values(self, fecha):
+        return self.anteriores
+
+
+class ApiJugadores:
+    def __init__(self, valores):
+        self.valores = valores
+        self.llamadas = 0
+
+    def get_all_players(self):
+        self.llamadas += 1
+        return [Player(id=pid, name=pid, market_value=v) for pid, v in self.valores.items()], None
+
+
+AYER = {str(i): 1_000_000 + i for i in range(200)}
+HOY_RECALCULADO = {pid: v + (5_000 if int(pid) % 3 == 0 else 0) for pid, v in AYER.items()}
+MADRUGADA = datetime(2026, 10, 30, 0, 40, tzinfo=timezone.utc)  # la hora no importa, solo .hour
+MANANA = datetime(2026, 10, 30, 9, 15, tzinfo=timezone.utc)
+
+
+def test_mercado_actualizado():
+    assert mercado_actualizado(HOY_RECALCULADO, AYER)
+    assert not mercado_actualizado(dict(AYER), AYER)
+    # Sin referencia (primer día) no se puede saber: se da por bueno.
+    assert mercado_actualizado(AYER, {})
+    # Valores nulos no cuentan ni a favor ni en contra.
+    assert not mercado_actualizado({**AYER, "x": None}, {**AYER, "x": 5})
+
+
+def test_dia_ya_completo_no_repite_ni_llama_a_la_api():
+    api = ApiJugadores(HOY_RECALCULADO)
+    recolectar, motivo = decidir_recoleccion(
+        StoreDia(completos={(MARCA_DIA_COMPLETO, "2026-10-30")}, anteriores=AYER), api, "2026-10-30", MADRUGADA
+    )
+    assert not recolectar and "completo" in motivo
+    assert api.llamadas == 0
+
+
+def test_de_madrugada_espera_si_el_mercado_no_ha_cambiado():
+    recolectar, motivo = decidir_recoleccion(StoreDia(anteriores=AYER), ApiJugadores(dict(AYER)), "2026-10-30", MADRUGADA)
+    assert not recolectar and "recalculado" in motivo
+
+
+def test_de_madrugada_recolecta_si_el_mercado_ya_cambio():
+    recolectar, _ = decidir_recoleccion(StoreDia(anteriores=AYER), ApiJugadores(HOY_RECALCULADO), "2026-10-30", MADRUGADA)
+    assert recolectar
+
+
+def test_pasada_la_hora_limite_recolecta_aunque_no_cambie_nada():
+    api = ApiJugadores(dict(AYER))
+    recolectar, _ = decidir_recoleccion(StoreDia(anteriores=AYER), api, "2026-10-30", MANANA)
+    assert recolectar
+    assert api.llamadas == 0
+
+
+def test_forzar_recolecta_aunque_el_dia_este_completo():
+    store = StoreDia(completos={(MARCA_DIA_COMPLETO, "2026-10-30")}, anteriores=AYER)
+    recolectar, _ = decidir_recoleccion(store, ApiJugadores(dict(AYER)), "2026-10-30", MADRUGADA, forzar=True)
+    assert recolectar
+
+
+def test_el_dia_del_snapshot_es_el_de_espana():
+    # 23:40 UTC del 29 son las 00:40 del 30 en Madrid (horario de invierno)...
+    assert config.hoy_juego(datetime(2026, 10, 29, 23, 40, tzinfo=timezone.utc)).isoformat() == "2026-10-30"
+    # ...y en verano, 22:40 UTC ya es el día siguiente.
+    assert config.hoy_juego(datetime(2026, 7, 1, 22, 40, tzinfo=timezone.utc)).isoformat() == "2026-07-02"
+    assert config.ahora_juego(datetime(2026, 10, 29, 23, 40, tzinfo=timezone.utc)).hour == 0

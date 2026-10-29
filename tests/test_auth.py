@@ -277,3 +277,40 @@ def test_sin_token_en_ningun_almacen_lanza_authmissing():
 
     assert "No hay ningún token almacenado" in str(exc.value)
     assert "caducado" not in str(exc.value).split("Detalle")[0]
+
+
+@responses.activate
+def test_app_despierta_recoge_el_token_que_renovo_el_job():
+    """La app (Streamlit) y el job diario comparten el token en Supabase.
+
+    Si el job lo renueva mientras la app tiene el viejo en memoria, la app no debe
+    usar su refresh_token viejo (puede estar ya rotado): al caducar el de memoria
+    relee el almacén y se queda con el del job, sin llamar a B2C.
+    """
+    ahora = int(time.time())
+    store = MemoryTokenStore(TokenSet(access_token="viejo", refresh_token="rt_viejo", expires_at=ahora + 1000))
+    set_token_store(store)
+    assert get_access_token() == "viejo"
+
+    # Pasa el tiempo: el de memoria caduca y, entre tanto, el job dejó uno nuevo.
+    import fantasy.auth as auth_mod
+    auth_mod._cached_tokens.expires_at = ahora - 10
+    store.save(TokenSet(access_token="del_job", refresh_token="rt_nuevo", expires_at=ahora + 80_000))
+
+    assert get_access_token() == "del_job"
+    assert len(responses.calls) == 0  # ni una llamada a B2C con el refresh_token viejo
+
+
+@responses.activate
+def test_si_el_token_del_almacen_tambien_caduco_renueva_con_el_refresh_mas_reciente():
+    """Arranque en frío (la app despierta tras dormir): se renueva con el último refresh_token."""
+    responses.add(
+        responses.POST, get_token_endpoint(),
+        json={"access_token": "renovado", "refresh_token": "rt_3", "expires_in": 3600}, status=200,
+    )
+    store = MemoryTokenStore(TokenSet(access_token="caducado", refresh_token="rt_2", expires_at=int(time.time()) - 60))
+    set_token_store(store)
+
+    assert get_access_token() == "renovado"
+    assert "refresh_token=rt_2" in responses.calls[0].request.body
+    assert store.load().refresh_token == "rt_3"

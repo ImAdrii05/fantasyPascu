@@ -1,10 +1,24 @@
 name: Daily Fantasy Snapshot
 
 on:
+  # El disparo puntual lo hace Supabase con pg_cron a las 00:40 de España
+  # (db/migrations/006_disparo_diario.sql): los cron de GitHub arrancaban con 4 a 7
+  # horas de retraso (el de las 04:00 UTC salía entre las 08:13 y las 11:37).
+  #
+  # Estos de aquí son el respaldo, por si el disparo de Supabase falla. Pueden ser
+  # varios porque el job mira primero si el día ya está completo y, si lo está,
+  # termina en segundos. Hora UTC: España es UTC+1 en invierno y UTC+2 en verano.
   schedule:
-    # Ejecución diaria a las 04:00 UTC (tras el recálculo nocturno de mercado)
-    - cron: '0 4 * * *'
+    - cron: '43 23 * * *'   # 00:43 / 01:43 en España
+    - cron: '13 2 * * *'    # 03:13 / 04:13
+    - cron: '43 5 * * *'    # 06:43 / 07:43
+    - cron: '13 8 * * *'    # 09:13 / 10:13 (ya guarda aunque el mercado no cambie)
   workflow_dispatch:
+    inputs:
+      forzar:
+        description: "Recolectar aunque hoy ya esté hecho"
+        type: boolean
+        default: false
 
 concurrency:
   group: fantasy-daily-snapshot
@@ -44,5 +58,7 @@ jobs:
           B2C_SCOPE: ${{ secrets.B2C_SCOPE }}
           FANTASY_LEAGUE_ID: ${{ secrets.FANTASY_LEAGUE_ID }}
           FANTASY_TOKEN_JSON: ${{ secrets.FANTASY_TOKEN_JSON }}
+          # Solo el botón manual puede forzar; en el resto de disparos llega vacío.
+          FORZAR_SNAPSHOT: ${{ inputs.forzar && '1' || '' }}
         run: |
           python -m fantasy.collect.run_daily

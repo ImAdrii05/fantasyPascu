@@ -6,7 +6,7 @@ Ejecuta los sub-jobs con aislamiento de fallos:
 - Solo si falla el cimiento (mercado global de jugadores), el proceso devuelve código de salida 1.
 """
 
-from datetime import date
+from datetime import datetime
 import logging
 import sys
 import time
@@ -65,6 +65,60 @@ def resolve_leagues(api_client: FantasyApiClient, store: SupabaseStore, errors: 
     return leagues
 
 
+# Marca que se guarda en raw_snapshots al terminar un día SIN errores. Con ella, las
+# ejecuciones siguientes del mismo día (hay varias programadas, por si alguna llega
+# tarde o el mercado aún no estaba) terminan en segundos en vez de repetirlo todo.
+MARCA_DIA_COMPLETO = "run_daily_ok"
+
+# Fracción mínima de jugadores con valor distinto al de ayer para dar el mercado por
+# recalculado. Cuando LaLiga ya lo ha hecho cambian muchos; si no, ninguno.
+UMBRAL_MERCADO_ACTUALIZADO = 0.01
+
+
+def mercado_actualizado(
+    nuevos: dict[str, int | None],
+    anteriores: dict[str, int | None],
+    umbral: float = UMBRAL_MERCADO_ACTUALIZADO,
+) -> bool:
+    """¿Ha recalculado ya LaLiga el mercado de hoy?
+
+    Compara el valor de cada jugador con el del último snapshot guardado. Sin
+    referencia (primer día) no se puede saber, y se da por bueno.
+    """
+    comunes = [
+        pid for pid, valor in nuevos.items()
+        if valor is not None and anteriores.get(pid) is not None
+    ]
+    if not comunes:
+        return True
+    cambiados = sum(1 for pid in comunes if nuevos[pid] != anteriores[pid])
+    return cambiados / len(comunes) >= umbral
+
+
+def decidir_recoleccion(
+    store, api_client, hoy: str, ahora_local: datetime, forzar: bool = False
+) -> tuple[bool, str]:
+    """Decide si esta ejecución debe recolectar. Devuelve (recolectar, motivo).
+
+    - El día ya está completo -> no (salvo `forzar`).
+    - Antes de la hora límite y con el mercado idéntico al de ayer -> no: LaLiga aún
+      no lo ha recalculado, y guardarlo pondría a cero todas las subidas de hoy.
+    - En cualquier otro caso -> sí.
+    """
+    if forzar:
+        return True, "forzado a mano"
+    if store.has_raw_snapshot(MARCA_DIA_COMPLETO, hoy):
+        return False, f"el día {hoy} ya está completo"
+    if ahora_local.hour >= config.HORA_LIMITE_ESPERA_MERCADO:
+        return True, f"pasadas las {config.HORA_LIMITE_ESPERA_MERCADO}:00 se recolecta siempre"
+
+    jugadores, _ = api_client.get_all_players()
+    nuevos = {p.id: p.market_value for p in jugadores if p.id}
+    if mercado_actualizado(nuevos, store.get_previous_market_values(hoy)):
+        return True, "el mercado de hoy ya está recalculado"
+    return False, "LaLiga aún no ha recalculado el mercado (valores idénticos a los de ayer)"
+
+
 def run_daily() -> int:
     """Ejecuta el ciclo de recolección diario de snapshots.
 
@@ -72,13 +126,28 @@ def run_daily() -> int:
         int: 0 en caso de éxito total o éxito parcial, 1 si falla el mercado global.
     """
     start_time = time.time()
-    today = date.today().isoformat()
+    ahora_local = config.ahora_juego()
+    today = ahora_local.date().isoformat()
     logger.info(f"============================================================")
-    logger.info(f"INICIANDO SNAPSHOT DIARIO LA LIGA FANTASY - FECHA: {today}")
+    logger.info(f"INICIANDO SNAPSHOT DIARIO LA LIGA FANTASY - FECHA: {today} ({ahora_local:%H:%M} en España)")
     logger.info(f"============================================================")
 
     api_client = FantasyApiClient(throttle_seconds=0.5, max_retries=3)
     store = get_supabase_store()
+
+    try:
+        recolectar, motivo = decidir_recoleccion(
+            store, api_client, today, ahora_local, forzar=config.FORZAR_SNAPSHOT
+        )
+    except Exception as e:
+        # Decidir es solo un atajo: si no se puede (Supabase o la API fallan un
+        # momento), se recolecta como siempre y el error real, si lo hay, sale abajo.
+        logger.warning(f"No se pudo comprobar si hacía falta recolectar: {e}", exc_info=True)
+        recolectar, motivo = True, "no se pudo comprobar, se recolecta por si acaso"
+    if not recolectar:
+        logger.info(f"⏭️ No se recolecta: {motivo}. Lo hará la siguiente ejecución programada.")
+        return 0
+    logger.info(f"Se recolecta: {motivo}.")
 
     summary: dict[str, int] = {
         "teams": 0,
@@ -155,8 +224,13 @@ def run_daily() -> int:
         return 1
 
     if errors:
+        # Sin marca: la siguiente ejecución del día lo vuelve a intentar entero.
         logger.warning("⚠️ RECOLECCIÓN FINALIZADA CON ÉXITO PARCIAL (datos globales guardados).")
     else:
+        try:
+            persist_raw(MARCA_DIA_COMPLETO, {"resumen": summary, "segundos": round(elapsed, 1)}, store=store)
+        except Exception as e:
+            logger.warning(f"No se pudo guardar la marca de día completo: {e}")
         logger.info("🎉 RECOLECCIÓN FINALIZADA CON ÉXITO TOTAL.")
 
     return 0

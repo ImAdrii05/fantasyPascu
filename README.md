@@ -229,7 +229,34 @@ existe solo como arranque de emergencia si la tabla estuviera vacía.
 minutos (el detalle de los ~813 jugadores). Revisa que el log termina en éxito y que
 **no aparece ningún token impreso**.
 
-A partir de ahí corre solo cada día a las 04:00 UTC.
+Si ya se recolectó hoy, el job termina en segundos diciendo que el día está
+completo. Para repetirlo igualmente, marca **forzar** al lanzarlo.
+
+### 4. Que se actualice a las 00:40 (recomendado)
+
+LaLiga recalcula el mercado hacia las 00:30 (hora española). El cron de GitHub no
+sirve para llegar a tiempo: el de las 04:00 UTC arrancaba entre las 08:13 y las
+11:37, así que por la mañana se veían las subidas de ayer. La hora exacta la pone
+Supabase con pg_cron, que solo "pulsa" el botón del workflow:
+
+1. Crea en GitHub un token *fine-grained* con acceso solo a este repo y el permiso
+   **Actions: Read and write** (pasos en `db/migrations/006_disparo_diario.sql`).
+2. Pon el token en ese fichero y ejecútalo entero en el SQL Editor de Supabase.
+3. Pruébalo: `select privado.disparar_snapshot_diario();` y en GitHub → Actions
+   aparece una ejecución nueva al momento.
+
+Supabase lo dispara a las 00:40, 02:40 y 07:10 de España (01:40, 03:40 y 08:10 en
+verano). El job decide solo qué hacer:
+
+- **Día ya completo** → termina en segundos.
+- **Antes de las 07:00 y precios idénticos a los de ayer** → LaLiga aún no los ha
+  recalculado; no guarda nada y espera al siguiente disparo. Guardarlo pondría a
+  cero todas las subidas del día.
+- **En otro caso** → recolecta. La fecha del snapshot es la de España, no la UTC
+  del servidor.
+
+Los cron de GitHub del workflow (00:43, 03:13, 06:43 y 09:13 de España) quedan de
+respaldo por si el disparo de Supabase falla, por ejemplo si caduca el token.
 
 ### Mantenimiento
 
